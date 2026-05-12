@@ -28,6 +28,29 @@ function initUI(appController) {
     const intensityToggle = document.getElementById('intensity-toggle');
     const mirrorToggle = document.getElementById('mirror-toggle');
     const videoEl = document.getElementById('video');
+    const modeParticleBtn = document.getElementById('mode-particle-btn');
+    const modeHudBtn = document.getElementById('mode-hud-btn');
+
+    // -------------------------------------------------------------------------
+    // Mode selector
+    // -------------------------------------------------------------------------
+    function setMode(mode) {
+        appController.setArMode(mode);
+        if (mode === 'particle') {
+            modeParticleBtn.classList.add('btn-mode-active');
+            modeHudBtn.classList.remove('btn-mode-active');
+            modeParticleBtn.setAttribute('aria-pressed', 'true');
+            modeHudBtn.setAttribute('aria-pressed', 'false');
+        } else {
+            modeHudBtn.classList.add('btn-mode-active');
+            modeParticleBtn.classList.remove('btn-mode-active');
+            modeHudBtn.setAttribute('aria-pressed', 'true');
+            modeParticleBtn.setAttribute('aria-pressed', 'false');
+        }
+    }
+
+    if (modeParticleBtn) modeParticleBtn.addEventListener('click', () => setMode('particle'));
+    if (modeHudBtn) modeHudBtn.addEventListener('click', () => setMode('hud'));
 
     // -------------------------------------------------------------------------
     // Restore UI state from StateManager (Req 11.6)

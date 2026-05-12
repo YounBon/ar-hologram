@@ -35,6 +35,24 @@ class AppController {
 
         // Whether the app is currently running
         this._running = false;
+
+        // AR mode: 'particle' | 'hud'
+        this._arMode = 'particle';
+
+        // HUD renderer (2D canvas overlay)
+        this._hudRenderer = null;
+
+        // Latest face center in screen pixels (for HUD crosshair)
+        this._faceCenterScreen = null;
+
+        // ── Freeze / box buffer ───────────────────────────────────────────────
+        // Ring buffer of the last 5 valid (open-hand) boxes
+        this._boxBuffer = [];          // max 5 entries
+        this._BOX_BUF_SIZE = 5;
+        // When frozen, this holds the locked box; null = not frozen
+        this._frozenBox = null;
+        // Whether we are currently in frozen state
+        this._isFrozen = false;
     }
 
     // -------------------------------------------------------------------------
@@ -169,6 +187,19 @@ class AppController {
         const hudEl = document.getElementById('hud-overlay');
         this._hudOverlay = new HUDOverlay(hudEl);
 
+        // Initialise 2D HUD renderer
+        const hudCanvas = document.getElementById('hud-canvas');
+        if (hudCanvas) {
+            hudCanvas.width = window.innerWidth;
+            hudCanvas.height = window.innerHeight;
+            this._hudRenderer = new HUDRenderer(hudCanvas);
+            // Keep canvas size in sync with window
+            window.addEventListener('resize', () => {
+                hudCanvas.width = window.innerWidth;
+                hudCanvas.height = window.innerHeight;
+            });
+        }
+
         // Apply mirror mode to MediaPipe engine
         this._mediaPipeEngine.setMirrorMode(this._stateManager.mirrorMode);
 
@@ -294,8 +325,20 @@ class AppController {
 
             this._faceLandmarkCount = landmarks.length; // 468
             this._lastFaceDetectedTime = performance.now();
+
+            // Compute face center in screen pixels for HUD crosshair
+            // Use nose tip (landmark 1) as the face center proxy
+            const nose = landmarks[1];
+            if (nose) {
+                const W = window.innerWidth;
+                const H = window.innerHeight;
+                const sx = mirrorMode ? (1 - nose.x) * W : nose.x * W;
+                const sy = nose.y * H;
+                this._faceCenterScreen = { x: sx, y: sy };
+            }
         } else {
             this._faceLandmarkCount = 0;
+            this._faceCenterScreen = null;
         }
     }
 
@@ -314,25 +357,111 @@ class AppController {
         const handCount = multiHandLandmarks.length;
         this._handCount = handCount;
 
-        // ── Only activate when EXACTLY 2 hands are detected ──────────────────
-        if (handCount !== 2) {
+        // ── If frozen, keep the frozen box active — ignore hand movement ──────
+        if (this._isFrozen) {
+            // Only unfreeze when EXACTLY 2 hands are visible AND both are fully open
+            const bothOpen = handCount === 2 &&
+                !this._isFist(multiHandLandmarks[0]) &&
+                !this._isFist(multiHandLandmarks[1]);
+
+            if (bothOpen) {
+                // Both hands open → unfreeze and resume tracking
+                this._isFrozen = false;
+                this._frozenBox = null;
+                this._boxBuffer = [];   // reset buffer so stale frames don't linger
+                if (this._hudRenderer) this._hudRenderer.setFrozen(false);
+            } else {
+                // Still frozen — keep the frozen box on screen
+                this._applyBox(this._frozenBox);
+                return;
+            }
+        }
+
+        // ── Not frozen — normal tracking ──────────────────────────────────────
+        if (handCount < 2) {
             this._handsVisible = false;
+            this._boxBuffer = [];   // clear buffer when hands leave
             this._particleSystem.updateHandBox(null);
+            if (this._hudRenderer) this._hudRenderer.setHandBox(null);
             return;
         }
 
-        // ── Compute hand box from thumb tip (lm[4]) + index tip (lm[8]) ──────
         const hand0 = multiHandLandmarks[0];
         const hand1 = multiHandLandmarks[1];
 
+        // ── Fist detection on either hand ─────────────────────────────────────
+        const fist0 = this._isFist(hand0);
+        const fist1 = this._isFist(hand1);
+
+        if (fist0 || fist1) {
+            // At least one fist detected → freeze using buffered box
+            if (this._boxBuffer.length > 0) {
+                // Use the oldest entry in the buffer (5 frames ago)
+                this._frozenBox = this._boxBuffer[0];
+                this._isFrozen = true;
+                if (this._hudRenderer) this._hudRenderer.setFrozen(this._arMode === 'hud');
+                this._applyBox(this._frozenBox);
+            }
+            // If buffer is empty (hands just appeared), do nothing this frame
+            return;
+        }
+
+        // ── Both hands open — compute box normally ────────────────────────────
         const box = this._computeHandBox(
             [hand0[4], hand0[8], hand1[4], hand1[8]],
             mirrorMode
         );
 
-        // ── Update AR brackets + scatter fallback particles ───────────────────
-        this._particleSystem.updateHandBox(box);
+        // Push to ring buffer (keep last BOX_BUF_SIZE entries)
+        this._boxBuffer.push(box);
+        if (this._boxBuffer.length > this._BOX_BUF_SIZE) {
+            this._boxBuffer.shift();
+        }
+
+        this._applyBox(box);
         this._handsVisible = true;
+    }
+
+    /**
+     * Detect a closed fist on one hand.
+     * Strategy: compare the average distance of fingertip landmarks (8,12,16,20)
+     * to the wrist (0). When the hand is open the tips are far from the wrist;
+     * when closed they are close. We normalise by the palm size (distance 0→9).
+     *
+     * @param {Array<{x,y,z}>} lm  21 MediaPipe hand landmarks
+     * @returns {boolean}
+     */
+    _isFist(lm) {
+        if (!lm || lm.length < 21) return false;
+
+        // Palm reference length: wrist (0) → middle finger MCP (9)
+        const palmLen = Math.hypot(lm[9].x - lm[0].x, lm[9].y - lm[0].y);
+        if (palmLen < 0.001) return false;   // degenerate
+
+        // Fingertip landmarks: index=8, middle=12, ring=16, pinky=20
+        const tips = [8, 12, 16, 20];
+        let sumDist = 0;
+        for (const idx of tips) {
+            sumDist += Math.hypot(lm[idx].x - lm[0].x, lm[idx].y - lm[0].y);
+        }
+        const avgNorm = (sumDist / tips.length) / palmLen;
+
+        // Empirically: open hand ≈ 1.6–2.2, fist ≈ 0.8–1.1
+        return avgNorm < 1.15;
+    }
+
+    /**
+     * Apply a box to the active renderer (particle or HUD mode).
+     * @param {{ left, top, right, bottom, width, height, centerX, centerY }} box
+     */
+    _applyBox(box) {
+        if (this._arMode === 'hud') {
+            this._particleSystem.updateHandBox(null);
+            if (this._hudRenderer) this._hudRenderer.setHandBox(box);
+        } else {
+            this._particleSystem.updateHandBox(box);
+            if (this._hudRenderer) this._hudRenderer.setHandBox(null);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -442,6 +571,33 @@ class AppController {
     get adaptiveQualityManager() { return this._adaptiveQualityManager; }
     get mediaPipeEngine() { return this._mediaPipeEngine; }
     get isRunning() { return this._running; }
+    get arMode() { return this._arMode; }
+
+    /**
+     * Switch between 'particle' and 'hud' AR modes.
+     * @param {'particle'|'hud'} mode
+     */
+    setArMode(mode) {
+        this._arMode = mode;
+
+        // Reset freeze state and box buffer when switching modes
+        // so the user must redo the hand gesture from scratch
+        this._isFrozen = false;
+        this._frozenBox = null;
+        this._boxBuffer = [];
+        this._handsVisible = false;
+        this._particleSystem.updateHandBox(null);
+        if (this._hudRenderer) {
+            this._hudRenderer.setHandBox(null);
+            this._hudRenderer.setFrozen(false);
+            this._hudRenderer.setActive(mode === 'hud');
+        }
+        if (this._particleSystem && this._particleSystem._points) {
+            if (mode === 'hud') {
+                this._particleSystem._points.visible = false;
+            }
+        }
+    }
 
     // -------------------------------------------------------------------------
     // Per-frame update (wired into SceneRenderer.startRenderLoop)
@@ -474,6 +630,14 @@ class AppController {
 
         // --- Advance shader time uniform (GPU fluid jitter) ---
         this._particleSystem.tick(dt);
+
+        // --- HUD renderer tick (2D canvas overlay) ---
+        if (this._hudRenderer) {
+            this._hudRenderer.setFaceCenter(this._faceCenterScreen);
+            this._hudRenderer.setFPS(this._currentFPS);
+            if (this._arMode !== 'hud') this._hudRenderer.setHandBox(null);
+            this._hudRenderer.tick(dt);
+        }
 
         // --- Color animation (always runs so colors stay alive) ---
         this._particleSystem.updateColors(dt);

@@ -57,6 +57,10 @@
     <!-- Three.js rendering canvas: transparent overlay above video -->
     <canvas id="canvas"></canvas>
 
+    <!-- 2D HUD canvas: drawn on top of Three.js for HUD mode -->
+    <canvas id="hud-canvas"
+      style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:3;pointer-events:none;display:block;"></canvas>
+
     <!-- HUD overlay: 4 corner elements + tracking status -->
     <div id="hud-overlay" aria-live="polite" aria-label="AR HUD thông tin trạng thái">
       <div id="fps" aria-label="FPS hiện tại">FPS: --</div>
@@ -66,8 +70,11 @@
       <div id="particle-count" aria-label="Số hạt">Particles: 0</div>
     </div>
 
-    <!-- Neon frame (cyan border around screen) -->
+    <!-- Neon frame (corner brackets around screen) -->
     <div id="neon-frame" aria-hidden="true"></div>
+    <div class="hud-corner-tr" aria-hidden="true"></div>
+    <div class="hud-corner-bl" aria-hidden="true"></div>
+    <div class="hud-scanline" aria-hidden="true"></div>
 
     <!-- Face bounding box (kept in DOM but hidden — see CSS) -->
     <div id="face-bbox" aria-hidden="true"></div>
@@ -98,6 +105,13 @@
 
   <!-- UI controls panel -->
   <div id="controls" role="region" aria-label="Điều khiển ứng dụng">
+    <!-- Mode selector -->
+    <div class="control-group" id="mode-group">
+      <button id="mode-particle-btn" class="btn btn-mode btn-mode-active" aria-pressed="true"
+        aria-label="Chế độ Particle">PARTICLE</button>
+      <button id="mode-hud-btn" class="btn btn-mode" aria-pressed="false" aria-label="Chế độ HUD">HUD</button>
+    </div>
+
     <button id="start-stop-btn" class="btn" aria-label="Bắt đầu hoặc dừng theo dõi">Start</button>
 
     <div class="control-group">
@@ -139,6 +153,7 @@
   <script src="js/CoordinateMapper.js"></script>
   <script src="js/SceneRenderer.js"></script>
   <script src="js/ParticleSystem.js"></script>
+  <script src="js/HUDRenderer.js"></script>
   <script src="js/AdaptiveQualityManager.js"></script>
   <script src="js/MediaPipeEngine.js"></script>
   <script src="js/HUDOverlay.js"></script>

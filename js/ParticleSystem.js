@@ -23,96 +23,139 @@ varying float v_luma;
 varying float v_edge;
 varying float v_contour;
 varying float v_phase;
+varying float v_depth;
+
 void main() {
   vec2 readUV = a_uv;
   if (u_mirror > 0.5) readUV.x = 1.0 - readUV.x;
-  v_uv = readUV;
+  v_uv   = readUV;
   v_phase = a_phase;
-  vec3 col = texture2D(u_videoTexture, readUV).rgb;
+
+  vec3 col  = texture2D(u_videoTexture, readUV).rgb;
   float luma = dot(col, vec3(0.299, 0.587, 0.114));
   v_luma = luma;
-  // 1. DÒ VIỀN CƠ BẢN
-  float d = 0.004;
-  float lR = dot(texture2D(u_videoTexture, readUV + vec2(d, 0)).rgb, vec3(0.299, 0.587, 0.114));
-  float lU = dot(texture2D(u_videoTexture, readUV + vec2(0, d)).rgb, vec3(0.299, 0.587, 0.114));
-  v_edge = smoothstep(0.01, 0.1, abs(luma - lR) + abs(luma - lU));
-  // 2. TỪ TRƯỜNG NHIỄU LOẠN (Magnetic Warp) - Bẻ cong bản đồ địa hình
-  // Tạo sóng cuộn để làm các đường thẳng biến thành vân tay uốn lượn
-  float warpX = sin(readUV.y * 15.0 + u_time * 2.0) * 0.03;
-  float warpY = cos(readUV.x * 15.0 - u_time * 1.5) * 0.03;
-  float warpedLuma = dot(texture2D(u_videoTexture, readUV + vec2(warpX, warpY)).rgb, vec3(0.299, 0.587, 0.114));
-  v_contour = fract(warpedLuma * 14.0); // Tạo vân tay
-  // 3. TỌA ĐỘ 3D VÀ HIỆU ỨNG THỞ (Breathing)
-  float halfHeight = 76.73;
-  float wx = (a_uv.x - 0.5) * 2.0 * u_aspect * halfHeight;
-  float wy = (a_uv.y - 0.5) * 2.0 * halfHeight;
-  // Khối 3D sâu hơn, nảy mạnh ở viền
-  float wz = (luma * 12.0) + (v_edge * 15.0);
-  // Hạt dao động tĩnh điện
-  float jx = sin(u_time * 2.0 + a_phase) * 0.2;
-  float jy = cos(u_time * 2.3 + a_phase * 1.5) * 0.2;
+
+  // ── Edge detection (Sobel-lite, 4-tap) ──────────────────────────────────
+  float d  = 0.004;
+  float lR = dot(texture2D(u_videoTexture, readUV + vec2( d, 0)).rgb, vec3(0.299,0.587,0.114));
+  float lL = dot(texture2D(u_videoTexture, readUV + vec2(-d, 0)).rgb, vec3(0.299,0.587,0.114));
+  float lU = dot(texture2D(u_videoTexture, readUV + vec2(0,  d)).rgb, vec3(0.299,0.587,0.114));
+  float lD = dot(texture2D(u_videoTexture, readUV + vec2(0, -d)).rgb, vec3(0.299,0.587,0.114));
+  v_edge = smoothstep(0.01, 0.12,
+    sqrt((lR - lL) * (lR - lL) + (lU - lD) * (lU - lD)));
+
+  // ── Magnetic warp contour (fingerprint lines) ────────────────────────────
+  float warpX = sin(readUV.y * 18.0 + u_time * 1.8) * 0.025;
+  float warpY = cos(readUV.x * 18.0 - u_time * 1.3) * 0.025;
+  float wLuma = dot(texture2D(u_videoTexture, readUV + vec2(warpX, warpY)).rgb,
+                    vec3(0.299,0.587,0.114));
+  v_contour = fract(wLuma * 16.0);
+
+  // ── 3-D displacement ─────────────────────────────────────────────────────
+  float halfH = 76.73;
+  float wx = (a_uv.x - 0.5) * 2.0 * u_aspect * halfH;
+  float wy = (a_uv.y - 0.5) * 2.0 * halfH;
+  float wz = luma * 14.0 + v_edge * 18.0;          // deeper depth map
+  v_depth  = wz;
+
+  // ── Electrostatic jitter ─────────────────────────────────────────────────
+  float jx = sin(u_time * 2.1 + a_phase)        * 0.18;
+  float jy = cos(u_time * 2.4 + a_phase * 1.7)  * 0.18;
+  // Micro-tremor on edges (plasma shimmer)
+  jx += v_edge * sin(u_time * 9.0 + a_phase * 3.1) * 0.12;
+  jy += v_edge * cos(u_time * 8.3 + a_phase * 2.7) * 0.12;
+
   vec4 mvPos = modelViewMatrix * vec4(wx + jx, wy + jy, wz, 1.0);
   gl_Position = projectionMatrix * mvPos;
-  // Hạt trên vân tay và viền sẽ to, chớp nháy nhẹ
-  float isLine = 1.0 - smoothstep(0.0, 0.2, v_contour);
-  float sizeMod = 0.5 + v_edge * 1.5 + isLine * 1.2 + (sin(u_time * 5.0 + a_phase) * 0.2);
-  gl_PointSize = u_pointSize * sizeMod * (200.0 / max(-mvPos.z, 1.0));
+
+  // ── Point size: edge/contour particles flicker and pulse ─────────────────
+  float isLine  = 1.0 - smoothstep(0.0, 0.18, v_contour);
+  float pulse   = sin(u_time * 6.0 + a_phase) * 0.25 + 0.75;   // 0.5 – 1.0
+  float sizeMod = (0.4 + v_edge * 1.8 + isLine * 1.4) * pulse;
+  gl_PointSize  = u_pointSize * sizeMod * (200.0 / max(-mvPos.z, 1.0));
 }
 `;
 
 const PARTICLE_FRAGMENT_SHADER = /* glsl */`
-uniform vec2 u_boxMin;
-uniform vec2 u_boxMax;
-uniform vec2 u_resolution;
-uniform float u_time; // Cần thời gian để chạy sọc nhiễu
+uniform vec2  u_boxMin;
+uniform vec2  u_boxMax;
+uniform vec2  u_resolution;
+uniform float u_time;
+
 varying vec2  v_uv;
 varying float v_luma;
 varying float v_edge;
 varying float v_contour;
 varying float v_phase;
+varying float v_depth;
+
 float rand(vec2 co) {
-  return fract(sin(dot(co, vec2(12.9898,78.233))) * 43758.5453);
+  return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453);
 }
+
 void main() {
+  // Holographic window mask
   vec2 ndc = gl_FragCoord.xy / u_resolution;
   if (ndc.x < u_boxMin.x || ndc.x > u_boxMax.x ||
       ndc.y < u_boxMin.y || ndc.y > u_boxMax.y) discard;
-  float r = rand(v_uv + v_phase);
-  float isLine = 1.0 - smoothstep(0.0, 0.2, v_contour);
-  float structure = 0.0;
-  // ĐỤC RỖNG TINH TẾ
-  if (v_luma < 0.12) {
-    if (r > 0.002) discard; // Bầu trời đêm tĩnh lặng
-    structure = 0.2;
+
+  // Stochastic density culling
+  float r      = rand(v_uv + v_phase);
+  float isLine = 1.0 - smoothstep(0.0, 0.18, v_contour);
+  float structure;
+  if (v_luma < 0.10) {
+    if (r > 0.0015) discard;
+    structure = 0.15;
   } else {
-    structure = (v_edge * 1.0) + (isLine * 0.8);
-    if (r > (structure + 0.1)) discard; // Xóa mảng thịt phẳng, chừa lại vân tay
+    structure = v_edge * 1.1 + isLine * 0.9;
+    if (r > structure + 0.08) discard;
   }
-  vec2 pt = gl_PointCoord - vec2(0.5);
+
+  // Circular soft dot
+  vec2  pt   = gl_PointCoord - vec2(0.5);
   float dist = length(pt);
   if (dist > 0.5) discard;
-  // SỌC NHIỄU HOLOGRAM (Holographic Scanlines)
-  // Tạo các vạch đen chạy dọc từ trên xuống dưới
-  float scanline = sin(v_uv.y * 250.0 - u_time * 10.0) * 0.5 + 0.5;
-  float alpha = (1.0 - smoothstep(0.2, 0.5, dist)) * min(structure + 0.3, 1.0);
-  alpha *= (0.4 + scanline * 0.6); // Trộn sọc nhiễu vào độ mờ
-  // BẢNG MÀU CYBERPUNK (Deep Space, Cyan & Magenta)
-  vec3 colBg   = vec3(0.0, 0.2, 0.4);   // Xanh đen
-  vec3 colBody = vec3(0.0, 0.6, 0.8);   // Xanh biển điện tử
-  vec3 colEdge = vec3(0.0, 1.0, 0.9);   // Lục lam phát sáng (Cyan)
-  vec3 colHigh = vec3(1.0, 0.0, 0.8);   // Hồng tím (Magenta) điểm xuyết
+
+  // Holographic scanlines
+  float scan  = sin(v_uv.y * 300.0 - u_time * 12.0) * 0.5 + 0.5;
+  float aberr = sin(v_uv.y * 300.0 - u_time * 12.0 + 0.4) * 0.3 + 0.7;
+
+  // Glitch flicker
+  float glitchRow   = floor(v_uv.y * 40.0);
+  float glitchTime  = floor(u_time * 0.5);
+  float glitch      = step(0.97, rand(vec2(glitchRow, glitchTime)));
+  float glitchAlpha = 1.0 - glitch * rand(vec2(glitchRow + 1.0, glitchTime)) * 0.8;
+
+  // Alpha
+  float softDot = 1.0 - smoothstep(0.15, 0.5, dist);
+  float alpha   = softDot * min(structure + 0.28, 1.0);
+  alpha *= (0.35 + scan * 0.65) * aberr * glitchAlpha;
+
+  // Colour palette — living hologram with slow hue drift
+  float hueShift = sin(u_time * 0.25) * 0.12;
+  vec3 colVoid  = vec3(0.0,  0.05 + hueShift, 0.18);
+  vec3 colBody  = vec3(0.0,  0.55 + hueShift, 0.85);
+  vec3 colEdge  = vec3(0.0,  1.0,             0.92);
+  vec3 colHigh  = vec3(1.0,  0.05,            0.75);
+  vec3 colCore  = vec3(1.0,  1.0,             1.0);
+
   vec3 finalColor;
-  if (v_luma < 0.12) {
-    finalColor = colBg;
+  if (v_luma < 0.10) {
+    finalColor = colVoid;
   } else {
-    // Viền và vân tay màu Cyan sáng rực
-    finalColor = mix(colBody, colEdge, min(v_edge * 1.5 + isLine, 1.0));
-    // Điểm xuyết màu Hồng ở những vùng có độ sáng đặc biệt (kính, chóp mũi)
-    float high = smoothstep(0.7, 1.0, v_luma);
+    float edgeMix  = min(v_edge * 1.6 + isLine, 1.0);
+    finalColor = mix(colBody, colEdge, edgeMix);
+    float high = smoothstep(0.68, 1.0, v_luma);
     finalColor = mix(finalColor, colHigh, high);
+    float coreGlow = v_edge * smoothstep(0.85, 1.0, v_luma);
+    finalColor = mix(finalColor, colCore, coreGlow * 0.6);
   }
-  // Nhân độ sáng để kích hoạt mượt bộ lọc Bloom
-  gl_FragColor = vec4(finalColor * 2.2, alpha);
+
+  // Chromatic scanline tint
+  finalColor.r += scan * v_edge * 0.15;
+  finalColor.b += (1.0 - scan) * isLine * 0.2;
+
+  gl_FragColor = vec4(finalColor * 2.4, alpha);
 }
 `;
 
@@ -364,6 +407,10 @@ class ParticleSystem {
 
     tick(deltaTime) {
         this._uTime.value += deltaTime;
+        // Animate holographic window overlays every frame
+        if (this._handPlane && this._handPlane.visible) {
+            this._animateHandRegion(deltaTime);
+        }
     }
 
     /** No-op in grid mode — color is driven by luminance in the shader. */
@@ -427,11 +474,12 @@ class ParticleSystem {
     // -------------------------------------------------------------------------
 
     _initHandRegionMesh() {
+        // ── Glass plane ───────────────────────────────────────────────────────
         const planeGeo = new THREE.PlaneGeometry(1, 1);
         const planeMat = new THREE.MeshBasicMaterial({
-            color: 0x0088ff,
+            color: 0x0055cc,
             transparent: true,
-            opacity: 0.2,
+            opacity: 0.10,
             depthWrite: false,
             side: THREE.DoubleSide,
         });
@@ -440,24 +488,94 @@ class ParticleSystem {
         this._handPlane.visible = false;
         this._scene.add(this._handPlane);
 
-        const bracketMat = new THREE.LineBasicMaterial({ color: 0x00FFFF });
+        // ── Outer corner brackets (cyan) ──────────────────────────────────────
         this._cornerLines = [];
-
+        const matOuter = new THREE.LineBasicMaterial({ color: 0x00FFFF });
         for (let i = 0; i < 4; i++) {
             const geo = new THREE.BufferGeometry();
-            const pts = new Float32Array(4 * 3);
-            geo.setAttribute('position', new THREE.BufferAttribute(pts, 3));
+            geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(4 * 3), 3));
             geo.setDrawRange(0, 4);
-            const line = new THREE.LineSegments(geo, bracketMat);
-            line.position.z = 1;
+            const line = new THREE.LineSegments(geo, matOuter);
+            line.position.z = 1.2;
             line.visible = false;
             this._scene.add(line);
             this._cornerLines.push(line);
         }
+
+        // ── Inner corner brackets (white, inset) ──────────────────────────────
+        this._cornerLinesInner = [];
+        const matInner = new THREE.LineBasicMaterial({ color: 0xffffff });
+        for (let i = 0; i < 4; i++) {
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(4 * 3), 3));
+            geo.setDrawRange(0, 4);
+            const line = new THREE.LineSegments(geo, matInner);
+            line.position.z = 1.3;
+            line.visible = false;
+            this._scene.add(line);
+            this._cornerLinesInner.push(line);
+        }
+
+        // ── Tick marks along each edge (4 edges × up to 8 ticks) ─────────────
+        // Each tick is a short perpendicular line segment.
+        // We store them as a single LineSegments with 4×8×2 = 64 vertices.
+        this._tickMat = new THREE.LineBasicMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.55 });
+        const tickGeo = new THREE.BufferGeometry();
+        const TICK_VERTS = 4 * 8 * 2; // 4 edges, 8 ticks each, 2 verts per tick
+        tickGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TICK_VERTS * 3), 3));
+        tickGeo.setDrawRange(0, TICK_VERTS);
+        this._tickLines = new THREE.LineSegments(tickGeo, this._tickMat);
+        this._tickLines.position.z = 1.1;
+        this._tickLines.visible = false;
+        this._scene.add(this._tickLines);
+
+        // ── Grid lines inside the window ──────────────────────────────────────
+        // 5 horizontal + 5 vertical = 10 lines, each needs 2 verts
+        const GRID_LINES = 10;
+        this._gridMat = new THREE.LineBasicMaterial({ color: 0x0088ff, transparent: true, opacity: 0.18 });
+        const gridGeo = new THREE.BufferGeometry();
+        gridGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(GRID_LINES * 2 * 3), 3));
+        gridGeo.setDrawRange(0, GRID_LINES * 2);
+        this._gridLines = new THREE.LineSegments(gridGeo, this._gridMat);
+        this._gridLines.position.z = -0.5;
+        this._gridLines.visible = false;
+        this._scene.add(this._gridLines);
+
+        // ── Scan line (single horizontal bar that sweeps top→bottom) ─────────
+        const scanGeo = new THREE.BufferGeometry();
+        scanGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(2 * 3), 3));
+        scanGeo.setDrawRange(0, 2);
+        this._scanMat = new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.7 });
+        this._scanLine = new THREE.LineSegments(scanGeo, this._scanMat);
+        this._scanLine.position.z = 0.5;
+        this._scanLine.visible = false;
+        this._scene.add(this._scanLine);
+
+        // ── Running-dot animation along edges ─────────────────────────────────
+        // 4 dots (one per corner bracket), each is a tiny Points object
+        this._edgeDots = [];
+        const dotMat = new THREE.PointsMaterial({ color: 0xffffff, size: 3.5, sizeAttenuation: false, transparent: true, opacity: 0.9 });
+        for (let i = 0; i < 4; i++) {
+            const dGeo = new THREE.BufferGeometry();
+            dGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3), 3));
+            const dot = new THREE.Points(dGeo, dotMat.clone());
+            dot.position.z = 1.5;
+            dot.visible = false;
+            this._scene.add(dot);
+            this._edgeDots.push(dot);
+        }
+
+        // Internal state
+        this._handPlaneTime = 0;
+        this._scanT = 0;          // 0→1 scan position
+        this._dotT = [0, 0.25, 0.5, 0.75]; // phase offset per dot
+        this._lastBox = null;
     }
 
     _updateHandRegionMesh(box) {
         if (!this._camera) return;
+        this._lastBox = box;
+
         const tl = this._screenToWorld(box.left, box.top);
         const tr = this._screenToWorld(box.right, box.top);
         const bl = this._screenToWorld(box.left, box.bottom);
@@ -467,17 +585,185 @@ class ParticleSystem {
         const wWorld = Math.abs(tr.x - tl.x);
         const hWorld = Math.abs(tl.y - bl.y);
 
+        // ── Glass plane ───────────────────────────────────────────────────────
+        const breathe = 0.07 + Math.sin(this._handPlaneTime * 2.0) * 0.035;
+        this._handPlane.material.opacity = breathe;
         this._handPlane.scale.set(wWorld, hWorld, 1);
         this._handPlane.position.set(c.x, c.y, -1);
         this._handPlane.visible = true;
 
-        const cs = Math.min(wWorld, hWorld) * 0.15;
+        // ── Corner brackets ───────────────────────────────────────────────────
+        const cs = Math.min(wWorld, hWorld) * 0.20;
+        const inset = Math.min(wWorld, hWorld) * 0.025;
+        const ci = cs * 0.5;
+
         this._setCorner(0, tl.x, tl.y, cs, 0, 0, -cs);
         this._setCorner(1, tr.x, tr.y, -cs, 0, 0, -cs);
         this._setCorner(2, bl.x, bl.y, cs, 0, 0, cs);
         this._setCorner(3, br.x, br.y, -cs, 0, 0, cs);
+        for (const l of this._cornerLines) l.visible = true;
 
-        for (const line of this._cornerLines) line.visible = true;
+        this._setCornerInner(0, tl.x + inset, tl.y - inset, ci, 0, 0, -ci);
+        this._setCornerInner(1, tr.x - inset, tr.y - inset, -ci, 0, 0, -ci);
+        this._setCornerInner(2, bl.x + inset, bl.y + inset, ci, 0, 0, ci);
+        this._setCornerInner(3, br.x - inset, br.y + inset, -ci, 0, 0, ci);
+        for (const l of this._cornerLinesInner) l.visible = true;
+
+        // ── Tick marks ────────────────────────────────────────────────────────
+        this._updateTickMarks(tl, tr, bl, br, wWorld, hWorld);
+
+        // ── Grid lines ────────────────────────────────────────────────────────
+        this._updateGridLines(tl, tr, bl, br, wWorld, hWorld);
+
+        // ── Scan line & dots are animated in _animateHandRegion ───────────────
+        this._scanLine.visible = true;
+        for (const d of this._edgeDots) d.visible = true;
+    }
+
+    /** Called every frame from tick() while the window is active. */
+    _animateHandRegion(deltaTime) {
+        this._handPlaneTime += deltaTime;
+
+        if (!this._lastBox || !this._camera) return;
+        const box = this._lastBox;
+
+        const tl = this._screenToWorld(box.left, box.top);
+        const tr = this._screenToWorld(box.right, box.top);
+        const bl = this._screenToWorld(box.left, box.bottom);
+        const br = this._screenToWorld(box.right, box.bottom);
+        const wWorld = Math.abs(tr.x - tl.x);
+        const hWorld = Math.abs(tl.y - bl.y);
+
+        // ── Breathing glass opacity ───────────────────────────────────────────
+        this._handPlane.material.opacity = 0.07 + Math.sin(this._handPlaneTime * 2.0) * 0.035;
+
+        // ── Grid opacity pulse ────────────────────────────────────────────────
+        this._gridMat.opacity = 0.12 + Math.sin(this._handPlaneTime * 1.5) * 0.06;
+
+        // ── Scan line sweep (top → bottom, period ~2.5 s) ─────────────────────
+        this._scanT = (this._scanT + deltaTime / 2.5) % 1.0;
+        // Interpolate from top edge to bottom edge in world space
+        const scanY = tl.y + (bl.y - tl.y) * this._scanT;
+        const scanPos = this._scanLine.geometry.attributes.position.array;
+        scanPos[0] = tl.x; scanPos[1] = scanY; scanPos[2] = 0;
+        scanPos[3] = tr.x; scanPos[4] = scanY; scanPos[5] = 0;
+        this._scanLine.geometry.attributes.position.needsUpdate = true;
+        // Fade near edges
+        const fadeEdge = Math.sin(this._scanT * Math.PI);
+        this._scanMat.opacity = 0.15 + fadeEdge * 0.65;
+
+        // ── Running dots along the perimeter ─────────────────────────────────
+        // Perimeter: top → right → bottom → left (CCW in world space)
+        // Parameterize 0→1 around the rectangle
+        const perim = 2 * (wWorld + hWorld);
+        for (let i = 0; i < 4; i++) {
+            this._dotT[i] = (this._dotT[i] + deltaTime * 0.35) % 1.0;
+            const t = this._dotT[i];
+            const dist = t * perim;
+            let px, py;
+            const top = wWorld, right = wWorld + hWorld, bot = 2 * wWorld + hWorld;
+            if (dist < top) {
+                const f = dist / wWorld;
+                px = tl.x + (tr.x - tl.x) * f;
+                py = tl.y + (tr.y - tl.y) * f;
+            } else if (dist < right) {
+                const f = (dist - top) / hWorld;
+                px = tr.x + (br.x - tr.x) * f;
+                py = tr.y + (br.y - tr.y) * f;
+            } else if (dist < bot) {
+                const f = (dist - right) / wWorld;
+                px = br.x + (bl.x - br.x) * f;
+                py = br.y + (bl.y - br.y) * f;
+            } else {
+                const f = (dist - bot) / hWorld;
+                px = bl.x + (tl.x - bl.x) * f;
+                py = bl.y + (tl.y - bl.y) * f;
+            }
+            const dp = this._edgeDots[i].geometry.attributes.position.array;
+            dp[0] = px; dp[1] = py; dp[2] = 0;
+            this._edgeDots[i].geometry.attributes.position.needsUpdate = true;
+            // Pulse brightness
+            this._edgeDots[i].material.opacity = 0.6 + Math.sin(this._handPlaneTime * 8 + i * 1.57) * 0.4;
+        }
+    }
+
+    _updateTickMarks(tl, tr, bl, br, wWorld, hWorld) {
+        const TICKS = 6; // per edge
+        const tickLen = Math.min(wWorld, hWorld) * 0.025;
+        const pos = this._tickLines.geometry.attributes.position.array;
+        let vi = 0;
+
+        const writeTick = (ax, ay, bx, by) => {
+            pos[vi++] = ax; pos[vi++] = ay; pos[vi++] = 1.1;
+            pos[vi++] = bx; pos[vi++] = by; pos[vi++] = 1.1;
+        };
+
+        // Top edge (tl → tr), perpendicular = down
+        for (let k = 1; k < TICKS + 1; k++) {
+            const f = k / (TICKS + 1);
+            const mx = tl.x + (tr.x - tl.x) * f;
+            const my = tl.y + (tr.y - tl.y) * f;
+            writeTick(mx, my, mx, my - tickLen);
+        }
+        // Bottom edge (bl → br), perpendicular = up
+        for (let k = 1; k < TICKS + 1; k++) {
+            const f = k / (TICKS + 1);
+            const mx = bl.x + (br.x - bl.x) * f;
+            const my = bl.y + (br.y - bl.y) * f;
+            writeTick(mx, my, mx, my + tickLen);
+        }
+        // Left edge (tl → bl), perpendicular = right
+        for (let k = 1; k < TICKS + 1; k++) {
+            const f = k / (TICKS + 1);
+            const mx = tl.x + (bl.x - tl.x) * f;
+            const my = tl.y + (bl.y - tl.y) * f;
+            writeTick(mx, my, mx + tickLen, my);
+        }
+        // Right edge (tr → br), perpendicular = left
+        for (let k = 1; k < TICKS + 1; k++) {
+            const f = k / (TICKS + 1);
+            const mx = tr.x + (br.x - tr.x) * f;
+            const my = tr.y + (br.y - tr.y) * f;
+            writeTick(mx, my, mx - tickLen, my);
+        }
+
+        this._tickLines.geometry.attributes.position.needsUpdate = true;
+        this._tickLines.geometry.setDrawRange(0, vi / 3);
+        this._tickLines.visible = true;
+    }
+
+    _updateGridLines(tl, tr, bl, br, wWorld, hWorld) {
+        const DIVS = 5; // 5 horizontal + 5 vertical
+        const pos = this._gridLines.geometry.attributes.position.array;
+        let vi = 0;
+
+        const write = (ax, ay, bx, by) => {
+            pos[vi++] = ax; pos[vi++] = ay; pos[vi++] = -0.5;
+            pos[vi++] = bx; pos[vi++] = by; pos[vi++] = -0.5;
+        };
+
+        // Horizontal lines (lerp between top and bottom edges)
+        for (let k = 1; k < DIVS; k++) {
+            const f = k / DIVS;
+            const lx = tl.x + (bl.x - tl.x) * f;
+            const ly = tl.y + (bl.y - tl.y) * f;
+            const rx = tr.x + (br.x - tr.x) * f;
+            const ry = tr.y + (br.y - tr.y) * f;
+            write(lx, ly, rx, ry);
+        }
+        // Vertical lines (lerp between left and right edges)
+        for (let k = 1; k < DIVS; k++) {
+            const f = k / DIVS;
+            const tx = tl.x + (tr.x - tl.x) * f;
+            const ty = tl.y + (tr.y - tl.y) * f;
+            const bx = bl.x + (br.x - bl.x) * f;
+            const by = bl.y + (br.y - bl.y) * f;
+            write(tx, ty, bx, by);
+        }
+
+        this._gridLines.geometry.attributes.position.needsUpdate = true;
+        this._gridLines.geometry.setDrawRange(0, vi / 3);
+        this._gridLines.visible = true;
     }
 
     _setCorner(idx, x, y, dx, dy, vx, vy) {
@@ -490,9 +776,25 @@ class ParticleSystem {
         this._cornerLines[idx].geometry.attributes.position.needsUpdate = true;
     }
 
+    _setCornerInner(idx, x, y, dx, dy, vx, vy) {
+        const pos = this._cornerLinesInner[idx].geometry.attributes.position.array;
+        const z = 1.1;
+        pos[0] = x; pos[1] = y; pos[2] = z;
+        pos[3] = x + dx; pos[4] = y + dy; pos[5] = z;
+        pos[6] = x; pos[7] = y; pos[8] = z;
+        pos[9] = x + vx; pos[10] = y + vy; pos[11] = z;
+        this._cornerLinesInner[idx].geometry.attributes.position.needsUpdate = true;
+    }
+
     _hideHandRegionMesh() {
         if (this._handPlane) this._handPlane.visible = false;
         if (this._cornerLines) for (const l of this._cornerLines) l.visible = false;
+        if (this._cornerLinesInner) for (const l of this._cornerLinesInner) l.visible = false;
+        if (this._tickLines) this._tickLines.visible = false;
+        if (this._gridLines) this._gridLines.visible = false;
+        if (this._scanLine) this._scanLine.visible = false;
+        if (this._edgeDots) for (const d of this._edgeDots) d.visible = false;
+        this._lastBox = null;
     }
 
     // -------------------------------------------------------------------------

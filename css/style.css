@@ -1,8 +1,9 @@
 /* ============================================================
-   Webcam Particle Face AR — Global Styles
+   Webcam Particle Face AR — Global Styles  (Sci-Fi Remaster)
    ============================================================ */
 
-/* Reset & full-screen base */
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+
 *,
 *::before,
 *::after {
@@ -17,12 +18,12 @@ body {
   height: 100%;
   overflow: hidden;
   background: #000;
-  color: #fff;
-  font-family: monospace;
+  color: #00ffcc;
+  font-family: 'Share Tech Mono', monospace;
 }
 
 /* ============================================================
-   App container — stacks video + canvas + HUD
+   App container
    ============================================================ */
 #app-container {
   position: fixed;
@@ -35,7 +36,7 @@ body {
 }
 
 /* ============================================================
-   Video element — webcam feed displayed at bottom layer
+   Video
    ============================================================ */
 #video {
   position: absolute;
@@ -46,10 +47,12 @@ body {
   object-fit: cover;
   z-index: 1;
   display: block;
+  /* subtle dark tint so particles pop */
+  filter: brightness(0.55) saturate(0.6);
 }
 
 /* ============================================================
-   Three.js canvas — transparent overlay above video
+   Three.js canvas
    ============================================================ */
 #canvas {
   position: absolute;
@@ -64,7 +67,7 @@ body {
 }
 
 /* ============================================================
-   HUD overlay — full-screen, non-interactive
+   HUD overlay
    ============================================================ */
 #hud-overlay {
   position: absolute;
@@ -76,105 +79,217 @@ body {
   pointer-events: none;
 }
 
-/* HUD corner elements — shared base */
+/* ── Corner data readouts ─────────────────────────────────── */
 #fps,
 #landmark-count,
 #hand-count,
 #particle-count {
   position: absolute;
-  font-family: monospace;
-  font-size: 12px;
-  color: #00FF00;
-  padding: 6px 10px;
-  text-shadow: 0 0 4px #00FF00;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: #00ffcc;
+  padding: 4px 8px;
+  text-shadow: 0 0 6px #00ffcc, 0 0 12px #00ffcc88;
+  /* subtle bracket decoration */
+  border-left: 1px solid #00ffcc44;
+  border-bottom: 1px solid #00ffcc44;
 }
 
-/* Top-left: FPS */
 #fps {
-  top: 10px;
-  left: 10px;
+  top: 14px;
+  left: 14px;
 }
 
-/* Top-right: Landmark count */
 #landmark-count {
-  top: 10px;
-  right: 10px;
+  top: 14px;
+  right: 14px;
+  border-left: none;
+  border-right: 1px solid #00ffcc44;
 }
 
-/* Bottom-left: Hand count */
 #hand-count {
-  bottom: 10px;
-  left: 10px;
+  bottom: 14px;
+  left: 14px;
 }
 
-/* Bottom-right: Particle count */
 #particle-count {
-  bottom: 10px;
-  right: 10px;
+  bottom: 14px;
+  right: 14px;
+  border-left: none;
+  border-right: 1px solid #00ffcc44;
 }
 
-/* Tracking status — centered top */
+/* ── Tracking status ─────────────────────────────────────── */
 #tracking-status {
   position: absolute;
-  top: 10px;
+  top: 14px;
   left: 50%;
   transform: translateX(-50%);
-  font-family: monospace;
-  font-size: 13px;
-  font-weight: bold;
-  color: #FFFF00;
-  /* default: SEARCHING */
-  text-shadow: 0 0 6px currentColor;
-  padding: 4px 12px;
-  letter-spacing: 2px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 12px;
+  font-weight: normal;
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  color: #ffff00;
+  text-shadow: 0 0 8px currentColor, 0 0 20px currentColor;
+  padding: 3px 14px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+  animation: statusPulse 2s ease-in-out infinite;
 }
 
 #tracking-status.tracking {
-  color: #00FF00;
+  color: #00ff88;
 }
 
 #tracking-status.searching {
-  color: #FFFF00;
+  color: #ffcc00;
 }
 
-/* ============================================================
-   Neon frame — cyan border around screen
-   ============================================================ */
-@keyframes neonPulse {
-  0% {
-    opacity: 0.6;
+@keyframes statusPulse {
+
+  0%,
+  100% {
+    opacity: 0.75;
   }
 
   50% {
     opacity: 1.0;
   }
+}
 
+/* ============================================================
+   Neon frame — corner-bracket style instead of full border
+   ============================================================ */
+@keyframes neonPulse {
+
+  0%,
   100% {
-    opacity: 0.6;
+    opacity: 0.55;
+  }
+
+  50% {
+    opacity: 1.0;
   }
 }
 
+/* The main #neon-frame is now invisible — corners are drawn via ::before / ::after
+   on four pseudo-elements injected by CSS. We use a clip-path trick with
+   box-shadow to draw only the four L-shaped corners. */
 #neon-frame {
   position: absolute;
   top: 0;
   left: 0;
   width: 100%;
   height: 100%;
-  border: 2px solid #00FFFF;
-  box-shadow: 0 0 8px #00FFFF, inset 0 0 8px rgba(0, 255, 255, 0.1);
   z-index: 4;
   pointer-events: none;
   animation: neonPulse 3s ease-in-out infinite;
+  /* Corner brackets via outline + clip */
+  --c: #00ffff;
+  --w: 28px;
+  /* arm length */
+  --t: 2px;
+  /* line thickness */
+}
+
+/* Top-left corner */
+#neon-frame::before {
+  content: '';
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: var(--w);
+  height: var(--w);
+  border-top: var(--t) solid var(--c);
+  border-left: var(--t) solid var(--c);
+  box-shadow: 0 0 8px var(--c), 0 0 20px #00ffff55;
+}
+
+/* Bottom-right corner */
+#neon-frame::after {
+  content: '';
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  width: var(--w);
+  height: var(--w);
+  border-bottom: var(--t) solid var(--c);
+  border-right: var(--t) solid var(--c);
+  box-shadow: 0 0 8px var(--c), 0 0 20px #00ffff55;
+}
+
+/* Top-right and bottom-left corners via extra divs injected in HTML */
+.hud-corner-tr {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  border-top: 2px solid #00ffff;
+  border-right: 2px solid #00ffff;
+  box-shadow: 0 0 8px #00ffff, 0 0 20px #00ffff55;
+  pointer-events: none;
+  z-index: 4;
+  animation: neonPulse 3s ease-in-out infinite;
+}
+
+.hud-corner-bl {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  width: 28px;
+  height: 28px;
+  border-bottom: 2px solid #00ffff;
+  border-left: 2px solid #00ffff;
+  box-shadow: 0 0 8px #00ffff, 0 0 20px #00ffff55;
+  pointer-events: none;
+  z-index: 4;
+  animation: neonPulse 3s ease-in-out infinite;
+}
+
+/* ── Horizontal scan line that sweeps the screen ─────────── */
+@keyframes scanSweep {
+  0% {
+    top: -2px;
+    opacity: 0.0;
+  }
+
+  5% {
+    opacity: 0.6;
+  }
+
+  95% {
+    opacity: 0.4;
+  }
+
+  100% {
+    top: 100%;
+    opacity: 0.0;
+  }
+}
+
+.hud-scanline {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #00ffff88, #00ffffcc, #00ffff88, transparent);
+  pointer-events: none;
+  z-index: 4;
+  animation: scanSweep 6s linear infinite;
 }
 
 /* ============================================================
-   Face bounding box — DISABLED (not shown in current UX)
+   Face bounding box — hidden
    ============================================================ */
 #face-bbox {
   display: none !important;
 }
-
-/* Hand region box div removed — AR frame is now Three.js Plane + LineSegments */
 
 /* ============================================================
    Loading overlay
@@ -199,36 +314,39 @@ body {
 }
 
 #loading-title {
-  font-size: 22px;
-  font-weight: bold;
-  color: #00FFFF;
-  text-shadow: 0 0 10px #00FFFF;
-  margin-bottom: 12px;
-  letter-spacing: 1px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 20px;
+  color: #00ffff;
+  text-shadow: 0 0 12px #00ffff, 0 0 30px #00ffff66;
+  margin-bottom: 10px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
 }
 
 #loading-message {
-  font-size: 14px;
-  color: #ccc;
-  margin-bottom: 20px;
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: #00ffcc88;
+  margin-bottom: 22px;
+  text-transform: uppercase;
 }
 
-/* Progress bar container */
 #loading-bar {
   width: 100%;
-  height: 6px;
-  background: #222;
-  border-radius: 3px;
+  height: 4px;
+  background: #0a0a1a;
+  border-radius: 2px;
   overflow: hidden;
+  border: 1px solid #00ffff33;
 }
 
-/* Animated fill */
 #loading-fill {
   height: 100%;
   width: 0%;
-  background: linear-gradient(90deg, #00FFFF, #FF00FF);
-  border-radius: 3px;
+  background: linear-gradient(90deg, #00ffff, #ff00ff);
+  border-radius: 2px;
   transition: width 0.3s ease;
+  box-shadow: 0 0 8px #00ffff;
 }
 
 /* ============================================================
@@ -240,7 +358,7 @@ body {
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(20, 0, 0, 0.92);
+  background: rgba(10, 0, 0, 0.92);
   display: none;
   align-items: center;
   justify-content: center;
@@ -252,21 +370,22 @@ body {
   max-width: 420px;
   width: 90%;
   padding: 32px;
-  border: 1px solid #FF4444;
-  border-radius: 8px;
-  background: rgba(40, 0, 0, 0.8);
+  border: 1px solid #ff4444;
+  border-radius: 4px;
+  background: rgba(30, 0, 0, 0.85);
 }
 
 #error-title {
-  font-size: 20px;
-  color: #FF4444;
+  font-size: 18px;
+  color: #ff4444;
   margin-bottom: 12px;
+  letter-spacing: 2px;
 }
 
 #error-message {
-  font-size: 14px;
-  color: #ffcccc;
-  line-height: 1.6;
+  font-size: 13px;
+  color: #ffaaaa;
+  line-height: 1.7;
   margin-bottom: 20px;
 }
 
@@ -279,24 +398,27 @@ body {
   left: 50%;
   transform: translateX(-50%);
   z-index: 5;
-  background: rgba(0, 0, 0, 0.7);
-  border: 1px solid rgba(0, 255, 255, 0.3);
-  border-radius: 10px;
-  padding: 12px 20px;
+  background: rgba(0, 5, 15, 0.75);
+  border: 1px solid #00ffff33;
+  border-radius: 6px;
+  padding: 10px 18px;
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 14px;
   flex-wrap: wrap;
   justify-content: center;
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 0 20px #00ffff18, inset 0 0 12px #00ffff08;
 }
 
 .control-group {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
-  color: #ccc;
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #00ffcc99;
 }
 
 .toggle-group {
@@ -308,47 +430,46 @@ body {
   user-select: none;
 }
 
-/* Shared button style */
 .btn {
-  background: rgba(0, 255, 255, 0.1);
-  color: #00FFFF;
-  border: 1px solid #00FFFF;
-  border-radius: 6px;
-  padding: 6px 16px;
-  font-size: 13px;
-  font-family: monospace;
+  background: rgba(0, 255, 255, 0.07);
+  color: #00ffff;
+  border: 1px solid #00ffff66;
+  border-radius: 3px;
+  padding: 5px 14px;
+  font-size: 11px;
+  font-family: 'Share Tech Mono', monospace;
+  letter-spacing: 2px;
+  text-transform: uppercase;
   cursor: pointer;
   transition: background 0.2s, box-shadow 0.2s;
 }
 
 .btn:hover,
 .btn:focus-visible {
-  background: rgba(0, 255, 255, 0.25);
-  box-shadow: 0 0 8px #00FFFF;
+  background: rgba(0, 255, 255, 0.18);
+  box-shadow: 0 0 10px #00ffff88;
   outline: none;
 }
 
 .btn:active {
-  background: rgba(0, 255, 255, 0.4);
+  background: rgba(0, 255, 255, 0.35);
 }
 
-/* Particle count slider */
 #particle-slider {
-  width: 120px;
-  accent-color: #00FFFF;
+  width: 110px;
+  accent-color: #00ffff;
   cursor: pointer;
 }
 
-/* Checkbox toggles */
 input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  accent-color: #00FFFF;
+  width: 14px;
+  height: 14px;
+  accent-color: #00ffff;
   cursor: pointer;
 }
 
 /* ============================================================
-   Privacy notice overlay
+   Privacy notice
    ============================================================ */
 #privacy-notice {
   position: fixed;
@@ -356,7 +477,7 @@ input[type="checkbox"] {
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(0, 0, 0, 0.85);
+  background: rgba(0, 0, 0, 0.88);
   display: none;
   align-items: center;
   justify-content: center;
@@ -366,23 +487,27 @@ input[type="checkbox"] {
 #privacy-content {
   max-width: 480px;
   width: 90%;
-  background: rgba(10, 10, 20, 0.95);
-  border: 1px solid rgba(0, 255, 255, 0.4);
-  border-radius: 10px;
+  background: rgba(0, 5, 18, 0.96);
+  border: 1px solid #00ffff44;
+  border-radius: 6px;
   padding: 32px;
   text-align: center;
+  box-shadow: 0 0 40px #00ffff22;
 }
 
 #privacy-title {
-  font-size: 18px;
-  color: #00FFFF;
+  font-size: 16px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #00ffff;
   margin-bottom: 16px;
+  text-shadow: 0 0 10px #00ffff;
 }
 
 #privacy-body {
-  font-size: 14px;
-  color: #ccc;
-  line-height: 1.7;
+  font-size: 13px;
+  color: #aacccc;
+  line-height: 1.8;
   margin-bottom: 24px;
 }
 
@@ -392,4 +517,26 @@ input[type="checkbox"] {
 
 #privacy-dismiss {
   min-width: 160px;
+}
+
+/* ============================================================
+   Mode selector buttons
+   ============================================================ */
+#mode-group {
+  gap: 4px;
+}
+
+.btn-mode {
+  padding: 5px 12px;
+  font-size: 10px;
+  letter-spacing: 3px;
+  opacity: 0.55;
+  border-color: #00ffff44;
+}
+
+.btn-mode-active {
+  opacity: 1.0;
+  border-color: #00ffff;
+  box-shadow: 0 0 10px #00ffff88;
+  background: rgba(0, 255, 255, 0.15);
 }
