@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<!--
+  Property Tests: CoordinateMapper — coordinate transform functions
+  Feature: webcam-particle-face-ar
+
+  Properties covered:
+    Property 1: Coordinate Mapping Formula Correctness (Normal Mode)
+    Property 2: Coordinate Mapping Formula Correctness (Mirror Mode)
+    Property 3: Palm Center Is Average of Five Landmarks
+    Property 4: Hand Distance Is Euclidean Distance
+    Property 5: Hand Distance to Scale Mapping Is Monotonic and Bounded
+
+  Validates: Requirements 4.2, 4.3, 7.1, 7.2, 7.5, 13.1, 13.2, 13.3, 13.4, 13.5, 13.6
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+  Results are printed to the on-screen log and the browser console.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Property Tests — CoordinateMapper</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Property Tests — CoordinateMapper</h1>
+    <h2>
+        Feature: webcam-particle-face-ar &nbsp;|&nbsp;
+        Properties 1–5 &nbsp;|&nbsp;
+        Validates: Requirements 4.2, 4.3, 7.1, 7.2, 7.5, 13.1–13.6
+    </h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- fast-check (same version as the rest of the project) -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <!-- Minimal THREE.Vector3 stub — the real Three.js is not needed for pure math tests -->
+    <script>
+        // Lightweight THREE.Vector3 that mirrors the subset used by CoordinateMapper
+        const THREE = {
+            Vector3: class Vector3 {
+                constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+                add(v) { this.x += v.x; this.y += v.y; this.z += v.z; return this; }
+                divideScalar(s) { this.x /= s; this.y /= s; this.z /= s; return this; }
+                distanceTo(v) {
+                    const dx = this.x - v.x, dy = this.y - v.y, dz = this.z - v.z;
+                    return Math.sqrt(dx * dx + dy * dy + dz * dz);
+                }
+                clone() { return new THREE.Vector3(this.x, this.y, this.z); }
+            }
+        };
+    </script>
+
+    <!-- CONSTANTS stub (subset needed by CoordinateMapper) -->
+    <script>
+        const CONSTANTS = {
+            CAMERA_FOV: 75,
+            CAMERA_Z: 100,
+            DEPTH_SCALE: 50,
+            HAND_DIST_MIN: 0.05,
+            HAND_DIST_MAX: 0.8,
+            SCALE_MIN: 0.3,
+            SCALE_MAX: 3.0,
+        };
+    </script>
+
+    <!-- Module under test -->
+    <script src="../../js/CoordinateMapper.js"></script>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Minimal test harness (same style as statemanager-roundtrip.test.html)
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Helper: build a CoordinateMapper with a synthetic camera/renderer
+        // that produces a known aspect ratio.
+        // -------------------------------------------------------------------------
+        function makeMapper(aspect) {
+            // renderer.domElement.width / height = aspect
+            const renderer = { domElement: { width: aspect * 100, height: 100 } };
+            const camera = {}; // not used directly by CoordinateMapper
+            return new CoordinateMapper(camera, renderer);
+        }
+
+        // Reference implementation of computeViewport (used to cross-check)
+        function refViewport(aspect) {
+            const fov = CONSTANTS.CAMERA_FOV;
+            const cameraZ = CONSTANTS.CAMERA_Z;
+            const h = 2 * Math.tan((fov / 2) * Math.PI / 180) * cameraZ;
+            return { width: h * aspect, height: h };
+        }
+
+        // Floating-point tolerance
+        const EPS = 1e-4;
+        function near(a, b) { return Math.abs(a - b) < EPS; }
+
+        // -------------------------------------------------------------------------
+        // Property 1: Coordinate Mapping Formula Correctness (Normal Mode)
+        // Feature: webcam-particle-face-ar, Property 1: Coordinate Mapping Formula Correctness (Normal Mode)
+        // Validates: Requirements 13.1, 13.2, 13.3, 13.6
+        // -------------------------------------------------------------------------
+        async function runProperty1() {
+            log('\n── Property 1: Coordinate Mapping — Normal Mode ──', 'title');
+            log('   Validates: Requirements 13.1, 13.2, 13.3, 13.6', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.record({
+                            x: fc.float({ min: 0, max: 1, noNaN: true }),
+                            y: fc.float({ min: 0, max: 1, noNaN: true }),
+                            z: fc.float({ min: -1, max: 1, noNaN: true }),
+                        }),
+                        fc.float({ min: 0.5, max: 3, noNaN: true }), // aspect ratio
+                        async (lm, aspect) => {
+                            const mapper = makeMapper(aspect);
+                            const { width, height } = refViewport(aspect);
+                            const v = mapper.landmarkToWorld(lm, false);
+
+                            const expectedX = (lm.x - 0.5) * width;
+                            const expectedY = (0.5 - lm.y) * height;
+                            const expectedZ = lm.z * CONSTANTS.DEPTH_SCALE;
+
+                            if (!near(v.x, expectedX) || !near(v.y, expectedY) || !near(v.z, expectedZ)) {
+                                throw new Error(
+                                    `lm=${JSON.stringify(lm)}, aspect=${aspect}\n` +
+                                    `  worldX: got ${v.x}, expected ${expectedX}\n` +
+                                    `  worldY: got ${v.y}, expected ${expectedY}\n` +
+                                    `  worldZ: got ${v.z}, expected ${expectedZ}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult('Property 1 — landmarkToWorld normal mode matches formula', passed, failDetail);
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 2: Coordinate Mapping Formula Correctness (Mirror Mode)
+        // Feature: webcam-particle-face-ar, Property 2: Coordinate Mapping Formula Correctness (Mirror Mode)
+        // Validates: Requirements 13.4, 13.5, 11.5
+        // -------------------------------------------------------------------------
+        async function runProperty2() {
+            log('\n── Property 2: Coordinate Mapping — Mirror Mode ──', 'title');
+            log('   Validates: Requirements 13.4, 13.5, 11.5', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.record({
+                            x: fc.float({ min: 0, max: 1, noNaN: true }),
+                            y: fc.float({ min: 0, max: 1, noNaN: true }),
+                            z: fc.float({ min: -1, max: 1, noNaN: true }),
+                        }),
+                        fc.float({ min: 0.5, max: 3, noNaN: true }),
+                        async (lm, aspect) => {
+                            const mapper = makeMapper(aspect);
+                            const normal = mapper.landmarkToWorld(lm, false);
+                            const mirror = mapper.landmarkToWorld(lm, true);
+
+                            // worldX_mirrored = -worldX_normal
+                            if (!near(mirror.x, -normal.x)) {
+                                throw new Error(
+                                    `Mirror X mismatch: mirror.x=${mirror.x}, -normal.x=${-normal.x}`
+                                );
+                            }
+                            // Y and Z are unaffected by mirror mode
+                            if (!near(mirror.y, normal.y)) {
+                                throw new Error(
+                                    `Mirror Y should equal normal Y: mirror.y=${mirror.y}, normal.y=${normal.y}`
+                                );
+                            }
+                            if (!near(mirror.z, normal.z)) {
+                                throw new Error(
+                                    `Mirror Z should equal normal Z: mirror.z=${mirror.z}, normal.z=${normal.z}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult('Property 2 — mirror worldX = -normal worldX; Y and Z unchanged', passed, failDetail);
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 3: Palm Center Is Average of Five Landmarks
+        // Feature: webcam-particle-face-ar, Property 3: Palm Center Is Average of Five Landmarks
+        // Validates: Requirements 4.2
+        // -------------------------------------------------------------------------
+        async function runProperty3() {
+            log('\n── Property 3: Palm Center Is Average of Five Landmarks ──', 'title');
+            log('   Validates: Requirements 4.2', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            const lmArb = fc.record({
+                x: fc.float({ min: 0, max: 1, noNaN: true }),
+                y: fc.float({ min: 0, max: 1, noNaN: true }),
+                z: fc.float({ min: -1, max: 1, noNaN: true }),
+            });
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.array(lmArb, { minLength: 21, maxLength: 21 }),
+                        fc.boolean(),                                    // mirrorMode
+                        fc.float({ min: 0.5, max: 3, noNaN: true }),    // aspect
+                        async (landmarks, mirrorMode, aspect) => {
+                            const mapper = makeMapper(aspect);
+                            const center = mapper.computePalmCenter(landmarks, mirrorMode);
+
+                            // Reference: average of world positions at indices 0,5,9,13,17
+                            const indices = [0, 5, 9, 13, 17];
+                            let sumX = 0, sumY = 0, sumZ = 0;
+                            for (const idx of indices) {
+                                const v = mapper.landmarkToWorld(landmarks[idx], mirrorMode);
+                                sumX += v.x; sumY += v.y; sumZ += v.z;
+                            }
+                            const n = indices.length;
+                            const expX = sumX / n, expY = sumY / n, expZ = sumZ / n;
+
+                            if (!near(center.x, expX) || !near(center.y, expY) || !near(center.z, expZ)) {
+                                throw new Error(
+                                    `Palm center mismatch:\n` +
+                                    `  got     (${center.x}, ${center.y}, ${center.z})\n` +
+                                    `  expected (${expX}, ${expY}, ${expZ})`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult('Property 3 — computePalmCenter = average of world(lm[0,5,9,13,17])', passed, failDetail);
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 4: Hand Distance Is Euclidean Distance
+        // Feature: webcam-particle-face-ar, Property 4: Hand Distance Is Euclidean Distance
+        // Validates: Requirements 4.3
+        // -------------------------------------------------------------------------
+        async function runProperty4() {
+            log('\n── Property 4: Hand Distance Is Euclidean Distance ──', 'title');
+            log('   Validates: Requirements 4.3', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            const vec3Arb = fc.tuple(
+                fc.float({ min: -200, max: 200, noNaN: true }),
+                fc.float({ min: -200, max: 200, noNaN: true }),
+                fc.float({ min: -200, max: 200, noNaN: true }),
+            );
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        vec3Arb, vec3Arb,
+                        async ([x1, y1, z1], [x2, y2, z2]) => {
+                            const mapper = makeMapper(1.777); // aspect doesn't matter here
+                            const p1 = new THREE.Vector3(x1, y1, z1);
+                            const p2 = new THREE.Vector3(x2, y2, z2);
+
+                            const dist = mapper.computeHandDistance(p1, p2);
+                            const expected = Math.sqrt(
+                                (x2 - x1) ** 2 + (y2 - y1) ** 2 + (z2 - z1) ** 2
+                            );
+
+                            // Euclidean distance
+                            if (!near(dist, expected)) {
+                                throw new Error(
+                                    `Distance mismatch: got ${dist}, expected ${expected}`
+                                );
+                            }
+
+                            // Symmetry: distance(p1,p2) = distance(p2,p1)
+                            const distRev = mapper.computeHandDistance(p2, p1);
+                            if (!near(dist, distRev)) {
+                                throw new Error(
+                                    `Symmetry violated: d(p1,p2)=${dist}, d(p2,p1)=${distRev}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult('Property 4 — computeHandDistance = Euclidean distance (symmetric)', passed, failDetail);
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 5: Hand Distance to Scale Mapping Is Monotonic and Bounded
+        // Feature: webcam-particle-face-ar, Property 5: Hand Distance to Scale Mapping Is Monotonic and Bounded
+        // Validates: Requirements 7.1, 7.2, 7.5
+        // -------------------------------------------------------------------------
+        async function runProperty5() {
+            log('\n── Property 5: Scale Mapping Is Monotonic and Bounded ──', 'title');
+            log('   Validates: Requirements 7.1, 7.2, 7.5', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            const mapper = makeMapper(1.777); // aspect doesn't matter for mapDistanceToScale
+
+            try {
+                // 5a: Bounded — for any distance (including out-of-range), result ∈ [0.3, 3.0]
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.float({ min: -1, max: 2, noNaN: true }),
+                        async (d) => {
+                            const scale = mapper.mapDistanceToScale(d);
+                            if (scale < CONSTANTS.SCALE_MIN - EPS || scale > CONSTANTS.SCALE_MAX + EPS) {
+                                throw new Error(
+                                    `Scale out of bounds: mapDistanceToScale(${d}) = ${scale}, ` +
+                                    `expected [${CONSTANTS.SCALE_MIN}, ${CONSTANTS.SCALE_MAX}]`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+
+                // 5b: Monotonic — d1 ≤ d2 → scale(d1) ≤ scale(d2)
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.tuple(
+                            fc.float({ min: 0, max: 1, noNaN: true }),
+                            fc.float({ min: 0, max: 1, noNaN: true }),
+                        ),
+                        async ([a, b]) => {
+                            const d1 = Math.min(a, b);
+                            const d2 = Math.max(a, b);
+                            const s1 = mapper.mapDistanceToScale(d1);
+                            const s2 = mapper.mapDistanceToScale(d2);
+                            if (s1 > s2 + EPS) {
+                                throw new Error(
+                                    `Monotonicity violated: d1=${d1} → scale=${s1}, d2=${d2} → scale=${s2}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult('Property 5 — mapDistanceToScale is monotonic and bounded [0.3, 3.0]', passed, failDetail);
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all properties
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting CoordinateMapper property tests…\n', 'info');
+
+            await runProperty1();
+            await runProperty2();
+            await runProperty3();
+            await runProperty4();
+            await runProperty5();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

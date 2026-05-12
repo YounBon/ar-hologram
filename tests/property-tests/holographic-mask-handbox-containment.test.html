@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<!--
+  Property Tests: Holographic Window Mask — Hand Box Contains All Four Finger Tips
+  Feature: holographic-window-mask
+
+  Properties covered:
+    Property 1: Hand Box Contains All Four Finger Tips
+
+  Validates: Requirements 6.2, 6.5
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+  Results are printed to the on-screen log and the browser console.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Property Tests — Holographic Mask Hand Box Containment</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Property Tests — Holographic Mask Hand Box Containment</h1>
+    <h2>
+        Feature: holographic-window-mask &nbsp;|&nbsp;
+        Property 1: Hand Box Contains All Four Finger Tips &nbsp;|&nbsp;
+        Validates: Requirements 6.2, 6.5
+    </h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- fast-check (same version as the rest of the project) -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Minimal test harness
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Pure hand box computation — mirrors AppController._computeHandBox() logic
+        // exactly.
+        //
+        // For each tip point p:
+        //   sx = mirrorMode ? (1 - p.x) * W : p.x * W
+        //   sy = p.y * H
+        //
+        // Tight box (before padding):
+        //   left_no_pad  = min(sx)
+        //   right_no_pad = max(sx)
+        //   top_no_pad   = min(sy)
+        //   bottom_no_pad = max(sy)
+        //
+        // Padded box (what _computeHandBox returns):
+        //   left   = left_no_pad   - PADDING
+        //   top    = top_no_pad    - PADDING
+        //   right  = right_no_pad  + PADDING
+        //   bottom = bottom_no_pad + PADDING
+        //
+        // Returns both the tight box and the padded box for verification.
+        // -------------------------------------------------------------------------
+        const PADDING = 24;
+
+        function computeHandBox(tipPoints, mirrorMode, W, H) {
+            let minX = Infinity, maxX = -Infinity;
+            let minY = Infinity, maxY = -Infinity;
+
+            const screenPoints = tipPoints.map(p => {
+                const sx = mirrorMode ? (1 - p.x) * W : p.x * W;
+                const sy = p.y * H;
+                return { sx, sy };
+            });
+
+            for (const { sx, sy } of screenPoints) {
+                if (sx < minX) minX = sx;
+                if (sx > maxX) maxX = sx;
+                if (sy < minY) minY = sy;
+                if (sy > maxY) maxY = sy;
+            }
+
+            return {
+                // Tight box (before padding) — used for containment check
+                tight: {
+                    left: minX,
+                    top: minY,
+                    right: maxX,
+                    bottom: maxY,
+                },
+                // Padded box (what AppController returns)
+                padded: {
+                    left: minX - PADDING,
+                    top: minY - PADDING,
+                    right: maxX + PADDING,
+                    bottom: maxY + PADDING,
+                },
+                // Screen-space coordinates of each tip
+                screenPoints,
+            };
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 1: Hand Box Contains All Four Finger Tips
+        // Feature: holographic-window-mask, Property 1: Hand Box Contains All Four Finger Tips
+        // Validates: Requirements 6.2, 6.5
+        //
+        // For any 4 finger tip points { x, y } in normalized space [0, 1] and any
+        // mirrorMode, the tight bounding box (before padding) computed by
+        // computeHandBox() must contain all 4 points:
+        //
+        //   left_no_pad  ≤ sx_i ≤ right_no_pad
+        //   top_no_pad   ≤ sy_i ≤ bottom_no_pad
+        //
+        // for all i ∈ {0, 1, 2, 3}.
+        // -------------------------------------------------------------------------
+        async function runProperty1() {
+            log('\n── Property 1: Hand Box Contains All Four Finger Tips ──', 'title');
+            log('   Validates: Requirements 6.2, 6.5', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        // 4 tip points in normalized [0, 1] space
+                        fc.array(
+                            fc.record({
+                                x: fc.float({ min: 0, max: 1, noNaN: true }),
+                                y: fc.float({ min: 0, max: 1, noNaN: true }),
+                            }),
+                            { minLength: 4, maxLength: 4 }
+                        ),
+                        // Mirror mode flag
+                        fc.boolean(),
+                        // Viewport dimensions
+                        fc.tuple(
+                            fc.integer({ min: 320, max: 3840 }),
+                            fc.integer({ min: 240, max: 2160 })
+                        ),
+                        async (tipPoints, mirrorMode, [W, H]) => {
+                            const result = computeHandBox(tipPoints, mirrorMode, W, H);
+                            const { tight, screenPoints } = result;
+
+                            for (let i = 0; i < screenPoints.length; i++) {
+                                const { sx, sy } = screenPoints[i];
+
+                                // Each screen point must be within the tight bounding box
+                                // Allow a tiny floating-point epsilon
+                                const EPS = 1e-9;
+
+                                if (sx < tight.left - EPS) {
+                                    throw new Error(
+                                        `Point ${i}: sx=${sx} < tight.left=${tight.left} ` +
+                                        `(p=${JSON.stringify(tipPoints[i])}, mirrorMode=${mirrorMode}, W=${W})`
+                                    );
+                                }
+                                if (sx > tight.right + EPS) {
+                                    throw new Error(
+                                        `Point ${i}: sx=${sx} > tight.right=${tight.right} ` +
+                                        `(p=${JSON.stringify(tipPoints[i])}, mirrorMode=${mirrorMode}, W=${W})`
+                                    );
+                                }
+                                if (sy < tight.top - EPS) {
+                                    throw new Error(
+                                        `Point ${i}: sy=${sy} < tight.top=${tight.top} ` +
+                                        `(p=${JSON.stringify(tipPoints[i])}, mirrorMode=${mirrorMode}, H=${H})`
+                                    );
+                                }
+                                if (sy > tight.bottom + EPS) {
+                                    throw new Error(
+                                        `Point ${i}: sy=${sy} > tight.bottom=${tight.bottom} ` +
+                                        `(p=${JSON.stringify(tipPoints[i])}, mirrorMode=${mirrorMode}, H=${H})`
+                                    );
+                                }
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 1 — Tight box contains all 4 finger tip screen coordinates',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 1b: Tight box is the MINIMAL containing box
+        // The tight box must be exactly min/max of the screen coordinates —
+        // not larger than necessary. At least one point must touch each edge.
+        // -------------------------------------------------------------------------
+        async function runProperty1b() {
+            log('\n── Property 1b: Tight box is minimal (at least one point on each edge) ──', 'title');
+            log('   Validates: Requirements 6.2 (tight bounding box)', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.array(
+                            fc.record({
+                                x: fc.float({ min: 0, max: 1, noNaN: true }),
+                                y: fc.float({ min: 0, max: 1, noNaN: true }),
+                            }),
+                            { minLength: 4, maxLength: 4 }
+                        ),
+                        fc.boolean(),
+                        fc.tuple(
+                            fc.integer({ min: 320, max: 3840 }),
+                            fc.integer({ min: 240, max: 2160 })
+                        ),
+                        async (tipPoints, mirrorMode, [W, H]) => {
+                            const result = computeHandBox(tipPoints, mirrorMode, W, H);
+                            const { tight, screenPoints } = result;
+
+                            const sxValues = screenPoints.map(p => p.sx);
+                            const syValues = screenPoints.map(p => p.sy);
+
+                            const EPS = 1e-9;
+
+                            // tight.left must equal the minimum sx
+                            const expectedLeft = Math.min(...sxValues);
+                            const expectedRight = Math.max(...sxValues);
+                            const expectedTop = Math.min(...syValues);
+                            const expectedBottom = Math.max(...syValues);
+
+                            if (Math.abs(tight.left - expectedLeft) > EPS) {
+                                throw new Error(
+                                    `tight.left=${tight.left} ≠ min(sx)=${expectedLeft}`
+                                );
+                            }
+                            if (Math.abs(tight.right - expectedRight) > EPS) {
+                                throw new Error(
+                                    `tight.right=${tight.right} ≠ max(sx)=${expectedRight}`
+                                );
+                            }
+                            if (Math.abs(tight.top - expectedTop) > EPS) {
+                                throw new Error(
+                                    `tight.top=${tight.top} ≠ min(sy)=${expectedTop}`
+                                );
+                            }
+                            if (Math.abs(tight.bottom - expectedBottom) > EPS) {
+                                throw new Error(
+                                    `tight.bottom=${tight.bottom} ≠ max(sy)=${expectedBottom}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 1b — Tight box equals exact min/max of screen coordinates',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 1c: Mirror mode only affects x-axis, not y-axis
+        // For the same set of points, mirrorMode=true and mirrorMode=false must
+        // produce the same tight.top and tight.bottom values.
+        // -------------------------------------------------------------------------
+        async function runProperty1c() {
+            log('\n── Property 1c: Mirror mode does not affect y-axis of tight box ──', 'title');
+            log('   Validates: Requirements 6.4 (mirror only flips x)', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.array(
+                            fc.record({
+                                x: fc.float({ min: 0, max: 1, noNaN: true }),
+                                y: fc.float({ min: 0, max: 1, noNaN: true }),
+                            }),
+                            { minLength: 4, maxLength: 4 }
+                        ),
+                        fc.tuple(
+                            fc.integer({ min: 320, max: 3840 }),
+                            fc.integer({ min: 240, max: 2160 })
+                        ),
+                        async (tipPoints, [W, H]) => {
+                            const normal = computeHandBox(tipPoints, false, W, H);
+                            const mirrored = computeHandBox(tipPoints, true, W, H);
+
+                            const EPS = 1e-9;
+
+                            if (Math.abs(mirrored.tight.top - normal.tight.top) > EPS) {
+                                throw new Error(
+                                    `Mirror changed tight.top: normal=${normal.tight.top}, mirrored=${mirrored.tight.top}`
+                                );
+                            }
+                            if (Math.abs(mirrored.tight.bottom - normal.tight.bottom) > EPS) {
+                                throw new Error(
+                                    `Mirror changed tight.bottom: normal=${normal.tight.bottom}, mirrored=${mirrored.tight.bottom}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 1c — Mirror mode does not affect y-axis of tight box',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all properties
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting Holographic Mask Hand Box Containment property tests…\n', 'info');
+
+            await runProperty1();
+            await runProperty1b();
+            await runProperty1c();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

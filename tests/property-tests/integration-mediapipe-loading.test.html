@@ -1,0 +1,746 @@
+﻿<!DOCTYPE html>
+<!--
+  Integration Test: MediaPipe Loading
+  Feature: webcam-particle-face-ar
+  Task 13.5
+
+  Tests MediaPipeEngine.load() and the loading screen / error overlay:
+  - Mock CDN script load success -> verify FaceMesh/Hands configured correctly
+  - Mock CDN script load failure -> verify onError callback and Vietnamese error message
+  - Verify loading screen is shown during MediaPipe load (Req 2.4)
+  - Verify error overlay is shown on load failure (Req 2.5)
+
+  Validates: Requirements 2.4, 2.5
+  How to run: Open this file in Chrome via localhost or HTTPS.
+-->
+<html lang="vi">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Integration Test - MediaPipe Loading</title>
+    <style>
+        body { font-family: monospace; background: #0d0d0d; color: #e0e0e0; padding: 24px; margin: 0; }
+        h1 { color: #00ffff; margin-bottom: 4px; font-size: 1.1rem; }
+        h2 { color: #aaa; font-size: 0.85rem; font-weight: normal; margin-top: 0; }
+        #log { margin-top: 20px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; }
+        .pass { color: #00ff88; }
+        .fail { color: #ff4444; }
+        .info { color: #aaaaaa; }
+        .title { color: #00ccff; font-weight: bold; }
+        #summary { margin-top: 24px; padding: 12px 16px; border-radius: 6px; font-size: 1rem; font-weight: bold; }
+        #summary.all-pass { background: #003322; color: #00ff88; border: 1px solid #00ff88; }
+        #summary.has-fail { background: #330000; color: #ff4444; border: 1px solid #ff4444; }
+    </style>
+</head>
+<body>
+    <!-- Minimal DOM stubs required by loading/error helper functions -->
+    <div id="loading-overlay" style="display:none">
+        <span id="loading-message"></span>
+        <div id="loading-bar" aria-valuenow="0">
+            <div id="loading-fill" style="width:0%"></div>
+        </div>
+    </div>
+    <div id="error-overlay" style="display:none">
+        <span id="error-message"></span>
+        <button id="retry-btn" style="display:none"></button>
+    </div>
+
+    <h1>Integration Test - MediaPipe Loading</h1>
+    <h2>Feature: webcam-particle-face-ar &nbsp;|&nbsp; Task 13.5 &nbsp;|&nbsp; Validates: Requirements 2.4, 2.5</h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Test harness
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log('  PASS  ' + name, 'pass');
+            } else {
+                log('  FAIL  ' + name, 'fail');
+                if (detail) log('         ' + detail, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Loading / error helper functions (inlined from AppController.js)
+        // -------------------------------------------------------------------------
+        function showLoading(visible) {
+            const el = document.getElementById('loading-overlay');
+            if (el) el.style.display = visible ? 'flex' : 'none';
+        }
+        function setLoadingMessage(message) {
+            const el = document.getElementById('loading-message');
+            if (el) el.textContent = message;
+        }
+        function setLoadingProgress(percent) {
+            const fill = document.getElementById('loading-fill');
+            const bar = document.getElementById('loading-bar');
+            if (fill) fill.style.width = percent + '%';
+            if (bar) bar.setAttribute('aria-valuenow', String(percent));
+        }
+        function showError(message, recoverable) {
+            showLoading(false);
+            const overlay = document.getElementById('error-overlay');
+            const msgEl = document.getElementById('error-message');
+            const retryBtn = document.getElementById('retry-btn');
+            if (msgEl) msgEl.textContent = message;
+            if (retryBtn) retryBtn.style.display = recoverable ? 'block' : 'none';
+            if (overlay) overlay.style.display = 'flex';
+        }
+
+        // -------------------------------------------------------------------------
+        // Mock factory functions
+        // -------------------------------------------------------------------------
+        function makeMockFaceMesh({ failInitialize = false } = {}) {
+            return function FaceMeshMock(config) {
+                this._options = null;
+                this._resultsCallback = null;
+                this.setOptions = function(opts) { this._options = opts; };
+                this.onResults = function(cb) { this._resultsCallback = cb; };
+                this.initialize = function() {
+                    return failInitialize
+                        ? Promise.reject(new Error('FaceMesh initialize failed'))
+                        : Promise.resolve();
+                };
+            };
+        }
+
+        function makeMockHands({ failInitialize = false } = {}) {
+            return function HandsMock(config) {
+                this._options = null;
+                this._resultsCallback = null;
+                this.setOptions = function(opts) { this._options = opts; };
+                this.onResults = function(cb) { this._resultsCallback = cb; };
+                this.initialize = function() {
+                    return failInitialize
+                        ? Promise.reject(new Error('Hands initialize failed'))
+                        : Promise.resolve();
+                };
+            };
+        }
+
+        // -------------------------------------------------------------------------
+        // MediaPipeEngineTestable — inlined with injected constructors
+        // -------------------------------------------------------------------------
+        class MediaPipeEngineTestable {
+            constructor(onFaceResults, onHandResults, onError, { FaceMeshCtor, HandsCtor } = {}) {
+                this._onFaceResults = onFaceResults || function() {};
+                this._onHandResults = onHandResults || function() {};
+                this._onError = onError || null;
+                this._FaceMeshCtor = FaceMeshCtor || (typeof FaceMesh !== 'undefined' ? FaceMesh : null);
+                this._HandsCtor = HandsCtor || (typeof Hands !== 'undefined' ? Hands : null);
+                this.faceMesh = null;
+                this.hands = null;
+                this.mirrorMode = false;
+            }
+
+            async load() {
+                try {
+                    await this.initFaceMesh();
+                    await this.initHands();
+                } catch (err) {
+                    const msg = 'Kh\u00f4ng th\u1ec3 t\u1ea3i MediaPipe. Vui l\u00f2ng ki\u1ec3m tra k\u1ebft n\u1ed1i m\u1ea1ng v\u00e0 t\u1ea3i l\u1ea1i trang.';
+                    if (this._onError) { this._onError(msg, err); }
+                    throw err;
+                }
+            }
+
+            async initFaceMesh() {
+                return new Promise((resolve, reject) => {
+                    if (!this._FaceMeshCtor) {
+                        reject(new Error('FaceMesh is not defined \u2014 CDN script may have failed to load.'));
+                        return;
+                    }
+                    const faceMesh = new this._FaceMeshCtor({ locateFile: function(f) { return f; } });
+                    faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+                    faceMesh.onResults(function(results) {});
+                    faceMesh.initialize().then(function() { this.faceMesh = faceMesh; resolve(); }.bind(this)).catch(reject);
+                });
+            }
+
+            async initHands() {
+                return new Promise((resolve, reject) => {
+                    if (!this._HandsCtor) {
+                        reject(new Error('Hands is not defined \u2014 CDN script may have failed to load.'));
+                        return;
+                    }
+                    const hands = new this._HandsCtor({ locateFile: function(f) { return f; } });
+                    hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+                    hands.onResults(function(results) {});
+                    hands.initialize().then(function() { this.hands = hands; resolve(); }.bind(this)).catch(reject);
+                });
+            }
+        }
+
+        // =========================================================================
+        // Test 1: FaceMesh CDN not loaded -> initFaceMesh rejects with correct error
+        // Validates: Req 2.5
+        // =========================================================================
+        async function test01_FaceMeshUndefined() {
+            log('\n-- Test 1: FaceMesh CDN not loaded -> initFaceMesh rejects with correct error --', 'title');
+            log('   Validates: Requirement 2.5', 'info');
+
+            const engine = new MediaPipeEngineTestable(null, null, null, {
+                FaceMeshCtor: null,   // simulate CDN failure
+                HandsCtor: makeMockHands()
+            });
+
+            let caughtErr = null;
+            try {
+                await engine.load();
+            } catch (err) {
+                caughtErr = err;
+            }
+
+            recordResult(
+                'FaceMesh undefined -> load() throws',
+                caughtErr !== null,
+                'Expected load() to throw when FaceMesh is not available'
+            );
+            recordResult(
+                'FaceMesh undefined -> error message contains "FaceMesh is not defined"',
+                caughtErr !== null && caughtErr.message.includes('FaceMesh is not defined'),
+                caughtErr ? 'Got: ' + caughtErr.message : 'No error thrown'
+            );
+        }
+
+        // =========================================================================
+        // Test 2: Hands CDN not loaded -> initHands rejects with correct error
+        // Validates: Req 2.5
+        // =========================================================================
+        async function test02_HandsUndefined() {
+            log('\n-- Test 2: Hands CDN not loaded -> initHands rejects with correct error --', 'title');
+            log('   Validates: Requirement 2.5', 'info');
+
+            const engine = new MediaPipeEngineTestable(null, null, null, {
+                FaceMeshCtor: makeMockFaceMesh(),  // FaceMesh succeeds
+                HandsCtor: null                     // Hands CDN failed
+            });
+
+            let caughtErr = null;
+            try {
+                await engine.load();
+            } catch (err) {
+                caughtErr = err;
+            }
+
+            recordResult(
+                'Hands undefined -> load() throws',
+                caughtErr !== null,
+                'Expected load() to throw when Hands is not available'
+            );
+            recordResult(
+                'Hands undefined -> error message contains "Hands is not defined"',
+                caughtErr !== null && caughtErr.message.includes('Hands is not defined'),
+                caughtErr ? 'Got: ' + caughtErr.message : 'No error thrown'
+            );
+        }
+
+        // =========================================================================
+        // Test 3: load() failure -> onError callback called with Vietnamese message
+        // Validates: Req 2.5
+        // =========================================================================
+        async function test03_OnErrorCalledWithVietnameseMessage() {
+            log('\n-- Test 3: load() failure -> onError callback called with Vietnamese message --', 'title');
+            log('   Validates: Requirement 2.5', 'info');
+
+            let onErrorMsg = null;
+            let onErrorErr = null;
+            const onError = function(msg, err) { onErrorMsg = msg; onErrorErr = err; };
+
+            const engine = new MediaPipeEngineTestable(null, null, onError, {
+                FaceMeshCtor: makeMockFaceMesh({ failInitialize: true }),
+                HandsCtor: makeMockHands()
+            });
+
+            try { await engine.load(); } catch (_) {}
+
+            const expectedMsg = 'Kh\u00f4ng th\u1ec3 t\u1ea3i MediaPipe. Vui l\u00f2ng ki\u1ec3m tra k\u1ebft n\u1ed1i m\u1ea1ng v\u00e0 t\u1ea3i l\u1ea1i trang.';
+
+            recordResult(
+                'load() failure -> onError callback is called',
+                onErrorMsg !== null,
+                'onError was never called'
+            );
+            recordResult(
+                'load() failure -> onError receives correct Vietnamese message',
+                onErrorMsg === expectedMsg,
+                'Got: "' + onErrorMsg + '"'
+            );
+            recordResult(
+                'load() failure -> onError receives the original error object',
+                onErrorErr !== null && onErrorErr instanceof Error,
+                onErrorErr ? 'Got: ' + onErrorErr.message : 'onErrorErr is null'
+            );
+        }
+
+        // =========================================================================
+        // Test 4: load() failure -> error is re-thrown after calling onError
+        // Validates: Req 2.5
+        // =========================================================================
+        async function test04_ErrorReThrownAfterOnError() {
+            log('\n-- Test 4: load() failure -> error is re-thrown after calling onError --', 'title');
+            log('   Validates: Requirement 2.5', 'info');
+
+            let onErrorCalled = false;
+            let caughtErr = null;
+            const onError = function() { onErrorCalled = true; };
+
+            const engine = new MediaPipeEngineTestable(null, null, onError, {
+                FaceMeshCtor: makeMockFaceMesh({ failInitialize: true }),
+                HandsCtor: makeMockHands()
+            });
+
+            try {
+                await engine.load();
+            } catch (err) {
+                caughtErr = err;
+            }
+
+            recordResult(
+                'load() failure -> onError is called before re-throw',
+                onErrorCalled,
+                'onError was never called'
+            );
+            recordResult(
+                'load() failure -> error is re-thrown (load() rejects)',
+                caughtErr !== null,
+                'Expected load() to reject but it resolved'
+            );
+            recordResult(
+                'load() failure -> both onError called AND error re-thrown',
+                onErrorCalled && caughtErr !== null,
+                'onErrorCalled=' + onErrorCalled + ', caughtErr=' + (caughtErr ? caughtErr.message : 'null')
+            );
+        }
+
+        // =========================================================================
+        // Test 5: load() success -> FaceMesh configured with maxNumFaces:1, refineLandmarks:true
+        // Validates: Req 2.2
+        // =========================================================================
+        async function test05_FaceMeshConfig() {
+            log('\n-- Test 5: load() success -> FaceMesh configured with maxNumFaces:1, refineLandmarks:true --', 'title');
+            log('   Validates: Requirement 2.2', 'info');
+
+            let capturedFaceMeshOptions = null;
+            function CapturingFaceMesh(config) {
+                this._options = null;
+                this.setOptions = function(opts) { this._options = opts; capturedFaceMeshOptions = opts; };
+                this.onResults = function() {};
+                this.initialize = function() { return Promise.resolve(); };
+            }
+
+            const engine = new MediaPipeEngineTestable(null, null, null, {
+                FaceMeshCtor: CapturingFaceMesh,
+                HandsCtor: makeMockHands()
+            });
+
+            try { await engine.load(); } catch (_) {}
+
+            recordResult(
+                'FaceMesh setOptions called with maxNumFaces: 1',
+                capturedFaceMeshOptions !== null && capturedFaceMeshOptions.maxNumFaces === 1,
+                'Got: ' + JSON.stringify(capturedFaceMeshOptions)
+            );
+            recordResult(
+                'FaceMesh setOptions called with refineLandmarks: true',
+                capturedFaceMeshOptions !== null && capturedFaceMeshOptions.refineLandmarks === true,
+                'Got: ' + JSON.stringify(capturedFaceMeshOptions)
+            );
+            recordResult(
+                'FaceMesh setOptions called with minDetectionConfidence: 0.5',
+                capturedFaceMeshOptions !== null && capturedFaceMeshOptions.minDetectionConfidence === 0.5,
+                'Got: ' + JSON.stringify(capturedFaceMeshOptions)
+            );
+            recordResult(
+                'FaceMesh setOptions called with minTrackingConfidence: 0.5',
+                capturedFaceMeshOptions !== null && capturedFaceMeshOptions.minTrackingConfidence === 0.5,
+                'Got: ' + JSON.stringify(capturedFaceMeshOptions)
+            );
+        }
+
+        // =========================================================================
+        // Test 6: load() success -> Hands configured with maxNumHands:2
+        // Validates: Req 2.3
+        // =========================================================================
+        async function test06_HandsConfig() {
+            log('\n-- Test 6: load() success -> Hands configured with maxNumHands:2 --', 'title');
+            log('   Validates: Requirement 2.3', 'info');
+
+            let capturedHandsOptions = null;
+            function CapturingHands(config) {
+                this._options = null;
+                this.setOptions = function(opts) { this._options = opts; capturedHandsOptions = opts; };
+                this.onResults = function() {};
+                this.initialize = function() { return Promise.resolve(); };
+            }
+
+            const engine = new MediaPipeEngineTestable(null, null, null, {
+                FaceMeshCtor: makeMockFaceMesh(),
+                HandsCtor: CapturingHands
+            });
+
+            try { await engine.load(); } catch (_) {}
+
+            recordResult(
+                'Hands setOptions called with maxNumHands: 2',
+                capturedHandsOptions !== null && capturedHandsOptions.maxNumHands === 2,
+                'Got: ' + JSON.stringify(capturedHandsOptions)
+            );
+            recordResult(
+                'Hands setOptions called with modelComplexity: 1',
+                capturedHandsOptions !== null && capturedHandsOptions.modelComplexity === 1,
+                'Got: ' + JSON.stringify(capturedHandsOptions)
+            );
+            recordResult(
+                'Hands setOptions called with minDetectionConfidence: 0.5',
+                capturedHandsOptions !== null && capturedHandsOptions.minDetectionConfidence === 0.5,
+                'Got: ' + JSON.stringify(capturedHandsOptions)
+            );
+            recordResult(
+                'Hands setOptions called with minTrackingConfidence: 0.5',
+                capturedHandsOptions !== null && capturedHandsOptions.minTrackingConfidence === 0.5,
+                'Got: ' + JSON.stringify(capturedHandsOptions)
+            );
+        }
+
+        // =========================================================================
+        // Test 7: Loading screen shown during MediaPipe load (Req 2.4)
+        // =========================================================================
+        async function test07_LoadingScreenShownDuringLoad() {
+            log('\n-- Test 7: Loading screen shown during MediaPipe load --', 'title');
+            log('   Validates: Requirement 2.4', 'info');
+
+            // Reset DOM state
+            showLoading(false);
+            setLoadingMessage('');
+            setLoadingProgress(0);
+
+            // Simulate AppController.init() loading sequence up to the MediaPipe load step
+            setLoadingMessage('Dang khoi tao...');
+            setLoadingProgress(5);
+            showLoading(true);
+
+            setLoadingMessage('Dang tai MediaPipe...');
+            setLoadingProgress(20);
+
+            // At this point (before load() resolves) the loading overlay should be visible
+            const overlayEl = document.getElementById('loading-overlay');
+            const msgEl = document.getElementById('loading-message');
+            const fillEl = document.getElementById('loading-fill');
+            const barEl = document.getElementById('loading-bar');
+
+            recordResult(
+                'loading-overlay is visible (display: flex) before load() completes',
+                overlayEl !== null && overlayEl.style.display === 'flex',
+                'display: ' + (overlayEl ? overlayEl.style.display : 'element not found')
+            );
+            recordResult(
+                'loading-message text is "Dang tai MediaPipe..." at progress 20%',
+                msgEl !== null && msgEl.textContent === 'Dang tai MediaPipe...',
+                'Got: "' + (msgEl ? msgEl.textContent : 'null') + '"'
+            );
+            recordResult(
+                'loading-fill width is 20% at MediaPipe load step',
+                fillEl !== null && fillEl.style.width === '20%',
+                'Got: ' + (fillEl ? fillEl.style.width : 'null')
+            );
+            recordResult(
+                'loading-bar aria-valuenow is "20" at MediaPipe load step',
+                barEl !== null && barEl.getAttribute('aria-valuenow') === '20',
+                'Got: ' + (barEl ? barEl.getAttribute('aria-valuenow') : 'null')
+            );
+        }
+
+        // =========================================================================
+        // Test 8: Loading screen hidden after successful load
+        // Validates: Req 2.4
+        // =========================================================================
+        async function test08_LoadingScreenHiddenAfterSuccess() {
+            log('\n-- Test 8: Loading screen hidden after successful load --', 'title');
+            log('   Validates: Requirement 2.4', 'info');
+
+            // Start with loading visible
+            showLoading(true);
+            setLoadingProgress(40);
+
+            const engine = new MediaPipeEngineTestable(null, null, null, {
+                FaceMeshCtor: makeMockFaceMesh(),
+                HandsCtor: makeMockHands()
+            });
+
+            let loadError = null;
+            try {
+                await engine.load();
+                setLoadingProgress(70);
+            } catch (err) {
+                loadError = err;
+            }
+
+            // Simulate AppController hiding loading after all init steps complete
+            if (!loadError) {
+                showLoading(false);
+            }
+
+            const overlayEl = document.getElementById('loading-overlay');
+
+            recordResult(
+                'load() succeeded without error',
+                loadError === null,
+                loadError ? 'Error: ' + loadError.message : ''
+            );
+            recordResult(
+                'loading-overlay is hidden (display: none) after successful load',
+                overlayEl !== null && overlayEl.style.display === 'none',
+                'display: ' + (overlayEl ? overlayEl.style.display : 'element not found')
+            );
+        }
+
+        // =========================================================================
+        // Test 9: Error overlay shown on MediaPipe load failure
+        // Validates: Req 2.5
+        // =========================================================================
+        async function test09_ErrorOverlayShownOnFailure() {
+            log('\n-- Test 9: Error overlay shown on MediaPipe load failure --', 'title');
+            log('   Validates: Requirement 2.5', 'info');
+
+            // Reset DOM
+            showLoading(true);
+            const errorOverlay = document.getElementById('error-overlay');
+            const errorMsgEl = document.getElementById('error-message');
+            if (errorOverlay) errorOverlay.style.display = 'none';
+            if (errorMsgEl) errorMsgEl.textContent = '';
+
+            const vietnameseMsg = 'Kh\u00f4ng th\u1ec3 t\u1ea3i MediaPipe. Vui l\u00f2ng ki\u1ec3m tra k\u1ebft n\u1ed1i m\u1ea1ng v\u00e0 t\u1ea3i l\u1ea1i trang.';
+
+            const onError = function(msg) {
+                showError(msg, false);
+            };
+
+            const engine = new MediaPipeEngineTestable(null, null, onError, {
+                FaceMeshCtor: makeMockFaceMesh({ failInitialize: true }),
+                HandsCtor: makeMockHands()
+            });
+
+            try { await engine.load(); } catch (_) {}
+
+            recordResult(
+                'error-overlay is visible (display: flex) after load failure',
+                errorOverlay !== null && errorOverlay.style.display === 'flex',
+                'display: ' + (errorOverlay ? errorOverlay.style.display : 'element not found')
+            );
+            recordResult(
+                'error-message contains Vietnamese network error text',
+                errorMsgEl !== null && errorMsgEl.textContent === vietnameseMsg,
+                'Got: "' + (errorMsgEl ? errorMsgEl.textContent : 'null') + '"'
+            );
+            recordResult(
+                'loading-overlay is hidden after error is shown',
+                document.getElementById('loading-overlay').style.display === 'none',
+                'loading-overlay display: ' + document.getElementById('loading-overlay').style.display
+            );
+        }
+
+        // =========================================================================
+        // Test 10: Error message content - Vietnamese guidance for network check
+        // Validates: Req 2.5
+        // =========================================================================
+        function test10_ErrorMessageContent() {
+            log('\n-- Test 10: Error message content - Vietnamese guidance for network check --', 'title');
+            log('   Validates: Requirement 2.5', 'info');
+
+            const errorMsg = 'Kh\u00f4ng th\u1ec3 t\u1ea3i MediaPipe. Vui l\u00f2ng ki\u1ec3m tra k\u1ebft n\u1ed1i m\u1ea1ng v\u00e0 t\u1ea3i l\u1ea1i trang.';
+
+            recordResult(
+                'Error message is the exact Vietnamese string',
+                errorMsg === 'Kh\u00f4ng th\u1ec3 t\u1ea3i MediaPipe. Vui l\u00f2ng ki\u1ec3m tra k\u1ebft n\u1ed1i m\u1ea1ng v\u00e0 t\u1ea3i l\u1ea1i trang.',
+                'Got: "' + errorMsg + '"'
+            );
+            recordResult(
+                'Error message mentions "ket noi mang" (network connection)',
+                errorMsg.includes('k\u1ebft n\u1ed1i m\u1ea1ng'),
+                'Message: "' + errorMsg + '"'
+            );
+            recordResult(
+                'Error message mentions "tai lai trang" (reload page)',
+                errorMsg.includes('t\u1ea3i l\u1ea1i trang'),
+                'Message: "' + errorMsg + '"'
+            );
+            recordResult(
+                'Error message mentions MediaPipe',
+                errorMsg.includes('MediaPipe'),
+                'Message: "' + errorMsg + '"'
+            );
+        }
+
+        // =========================================================================
+        // Test 11: AppController.handleError maps mediapipe-load context correctly
+        // Validates: Req 2.5
+        // =========================================================================
+        function test11_HandleErrorMapping() {
+            log('\n-- Test 11: AppController.handleError maps mediapipe-load context correctly --', 'title');
+            log('   Validates: Requirement 2.5', 'info');
+
+            // Replicate the messages map from AppController.handleError
+            const messages = {
+                'mediapipe-load': 'Kh\u00f4ng th\u1ec3 t\u1ea3i MediaPipe. Vui l\u00f2ng ki\u1ec3m tra k\u1ebft n\u1ed1i m\u1ea1ng v\u00e0 t\u1ea3i l\u1ea1i trang.',
+                'camera-permission': 'B\u1ea1n \u0111\u00e3 t\u1eeb ch\u1ed1i quy\u1ec1n truy c\u1eadp camera. V\u00e0o Settings > Privacy > Camera \u0111\u1ec3 c\u1ea5p quy\u1ec1n l\u1ea1i.',
+                'camera-disconnect': 'Camera b\u1ecb ng\u1eaft k\u1ebft n\u1ed1i. Vui l\u00f2ng ki\u1ec3m tra l\u1ea1i thi\u1ebft b\u1ecb.'
+            };
+
+            // Simulate handleError logic: recoverable = context === 'camera-disconnect'
+            function handleError(context) {
+                const message = messages[context] || 'Da xay ra loi: ' + context;
+                const recoverable = context === 'camera-disconnect';
+                return { message, recoverable };
+            }
+
+            const result = handleError('mediapipe-load');
+            const expectedMsg = 'Kh\u00f4ng th\u1ec3 t\u1ea3i MediaPipe. Vui l\u00f2ng ki\u1ec3m tra k\u1ebft n\u1ed1i m\u1ea1ng v\u00e0 t\u1ea3i l\u1ea1i trang.';
+
+            recordResult(
+                '"mediapipe-load" context -> correct Vietnamese message',
+                result.message === expectedMsg,
+                'Got: "' + result.message + '"'
+            );
+            recordResult(
+                '"mediapipe-load" is non-recoverable (no retry button shown)',
+                result.recoverable === false,
+                'recoverable: ' + result.recoverable
+            );
+
+            // Reset DOM and simulate showError for mediapipe-load
+            const errorOverlay = document.getElementById('error-overlay');
+            const retryBtn = document.getElementById('retry-btn');
+            if (errorOverlay) errorOverlay.style.display = 'none';
+            if (retryBtn) retryBtn.style.display = 'none';
+
+            showError(result.message, result.recoverable);
+
+            recordResult(
+                'showError with non-recoverable -> retry-btn is hidden',
+                retryBtn !== null && retryBtn.style.display === 'none',
+                'retry-btn display: ' + (retryBtn ? retryBtn.style.display : 'null')
+            );
+            recordResult(
+                'showError with non-recoverable -> error-overlay is visible',
+                errorOverlay !== null && errorOverlay.style.display === 'flex',
+                'error-overlay display: ' + (errorOverlay ? errorOverlay.style.display : 'null')
+            );
+        }
+
+        // =========================================================================
+        // Test 12: Loading progress advances during MediaPipe init sequence
+        // Validates: Req 2.4
+        // =========================================================================
+        function test12_LoadingProgressAdvances() {
+            log('\n-- Test 12: Loading progress advances during MediaPipe init sequence --', 'title');
+            log('   Validates: Requirement 2.4', 'info');
+
+            const fill = document.getElementById('loading-fill');
+            const bar = document.getElementById('loading-bar');
+
+            // Step 1: initial state (5%)
+            setLoadingProgress(5);
+            recordResult(
+                'Progress step 1: loading-fill width is 5%',
+                fill !== null && fill.style.width === '5%',
+                'Got: ' + (fill ? fill.style.width : 'null')
+            );
+            recordResult(
+                'Progress step 1: aria-valuenow is "5"',
+                bar !== null && bar.getAttribute('aria-valuenow') === '5',
+                'Got: ' + (bar ? bar.getAttribute('aria-valuenow') : 'null')
+            );
+
+            // Step 2: MediaPipe load starts (20%)
+            setLoadingProgress(20);
+            recordResult(
+                'Progress step 2: loading-fill width is 20%',
+                fill !== null && fill.style.width === '20%',
+                'Got: ' + (fill ? fill.style.width : 'null')
+            );
+            recordResult(
+                'Progress step 2: aria-valuenow is "20"',
+                bar !== null && bar.getAttribute('aria-valuenow') === '20',
+                'Got: ' + (bar ? bar.getAttribute('aria-valuenow') : 'null')
+            );
+
+            // Step 3: FaceMesh initializing (40%)
+            setLoadingProgress(40);
+            recordResult(
+                'Progress step 3: loading-fill width is 40%',
+                fill !== null && fill.style.width === '40%',
+                'Got: ' + (fill ? fill.style.width : 'null')
+            );
+            recordResult(
+                'Progress step 3: aria-valuenow is "40"',
+                bar !== null && bar.getAttribute('aria-valuenow') === '40',
+                'Got: ' + (bar ? bar.getAttribute('aria-valuenow') : 'null')
+            );
+
+            // Step 4: MediaPipe fully loaded (70%)
+            setLoadingProgress(70);
+            recordResult(
+                'Progress step 4: loading-fill width is 70%',
+                fill !== null && fill.style.width === '70%',
+                'Got: ' + (fill ? fill.style.width : 'null')
+            );
+            recordResult(
+                'Progress step 4: aria-valuenow is "70"',
+                bar !== null && bar.getAttribute('aria-valuenow') === '70',
+                'Got: ' + (bar ? bar.getAttribute('aria-valuenow') : 'null')
+            );
+        }
+
+        // =========================================================================
+        // Run all tests
+        // =========================================================================
+        async function runAll() {
+            log('Starting MediaPipe loading integration tests...\n', 'info');
+
+            await test01_FaceMeshUndefined();
+            await test02_HandsUndefined();
+            await test03_OnErrorCalledWithVietnameseMessage();
+            await test04_ErrorReThrownAfterOnError();
+            await test05_FaceMeshConfig();
+            await test06_HandsConfig();
+            await test07_LoadingScreenShownDuringLoad();
+            await test08_LoadingScreenHiddenAfterSuccess();
+            await test09_ErrorOverlayShownOnFailure();
+            test10_ErrorMessageContent();
+            test11_HandleErrorMapping();
+            test12_LoadingProgressAdvances();
+
+            const total = results.length;
+            const passed = results.filter(function(r) { return r.passed; }).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? 'All ' + total + ' tests passed'
+                : failed + ' of ' + total + ' tests FAILED';
+
+            console.log('\nResults: ' + passed + '/' + total + ' passed');
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+</html>

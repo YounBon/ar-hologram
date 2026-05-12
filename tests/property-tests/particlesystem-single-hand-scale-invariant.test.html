@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<!--
+  Property Test: ParticleSystem Single Hand Does Not Change Scale
+  Feature: webcam-particle-face-ar, Property 12: Single Hand Does Not Change Scale
+
+  "For any current scale value, when updateFromHands is called with handCount === 1,
+   _targetScale must remain unchanged (equal to currentScale before the call)."
+
+  Validates: Requirements 4.4, 7.4
+  "WHEN Hand_Tracker chỉ phát hiện đúng một bàn tay, THE Particle_Cloud SHALL duy trì
+   kích thước hiện tại và không thay đổi scale."
+  "WHEN chỉ một bàn tay được phát hiện, THE Particle_Cloud SHALL duy trì kích thước
+   hiện tại và không thay đổi scale."
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+  Results are printed to the on-screen log and the browser console.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Property Test — ParticleSystem Single Hand Scale Invariant</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Property Test — ParticleSystem Single Hand Does Not Change Scale</h1>
+    <h2>
+        Feature: webcam-particle-face-ar &nbsp;|&nbsp;
+        Property 12 &nbsp;|&nbsp;
+        Validates: Requirements 4.4, 7.4
+    </h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- fast-check (same version as the rest of the project) -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <!-- THREE.js stub — only the subset used by ParticleSystem is needed -->
+    <script>
+        // Feature: webcam-particle-face-ar, Property 12: Single Hand Does Not Change Scale
+        const THREE = {
+            BufferAttribute: class BufferAttribute {
+                constructor(array, itemSize) {
+                    this.array = array;
+                    this.itemSize = itemSize;
+                    this.needsUpdate = false;
+                }
+            },
+
+            BufferGeometry: class BufferGeometry {
+                constructor() { this._attrs = {}; }
+                setAttribute(name, attr) { this._attrs[name] = attr; }
+                get attributes() { return this._attrs; }
+                dispose() { }
+            },
+
+            PointsMaterial: class PointsMaterial {
+                constructor(opts) { Object.assign(this, opts); }
+            },
+
+            Vector3: class Vector3 {
+                constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+                set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }
+                copy(v) { this.x = v.x; this.y = v.y; this.z = v.z; return this; }
+                lerp(v, t) {
+                    this.x += (v.x - this.x) * t;
+                    this.y += (v.y - this.y) * t;
+                    this.z += (v.z - this.z) * t;
+                    return this;
+                }
+            },
+        };
+
+        THREE.Points = class Points {
+            constructor(geometry, material) {
+                this.geometry = geometry;
+                this.material = material;
+                this.position = new THREE.Vector3();
+                this.scale = { setScalar(s) { } };
+            }
+        };
+    </script>
+
+    <!-- CONSTANTS (full set so ParticleSystem resolves every reference) -->
+    <script>
+        const CONSTANTS = {
+            DEPTH_SCALE: 50,
+            DEFAULT_PARTICLE_COUNT: 2000,
+            MIN_PARTICLES: 500,
+            MAX_PARTICLES: 5000,
+            LERP_POSITION: 0.1,
+            LERP_SCALE: 0.08,
+            LERP_BACK: 0.01,
+            JITTER_RADIUS_NORMALIZED: 0.02,
+            HAND_DIST_MIN: 0.05,
+            HAND_DIST_MAX: 0.8,
+            SCALE_MIN: 0.3,
+            SCALE_MAX: 3.0,
+            CAMERA_FOV: 75,
+            CAMERA_Z: 100,
+        };
+    </script>
+
+    <!-- Module under test -->
+    <script src="../../js/ParticleSystem.js"></script>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Minimal test harness (consistent with other property test files)
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Helpers
+        // -------------------------------------------------------------------------
+
+        function makeCoordinateMapperStub() {
+            return {
+                computeViewport() {
+                    return { width: 272.2, height: 153.1 };
+                }
+            };
+        }
+
+        function makeSceneStub() {
+            return { add() { }, remove() { } };
+        }
+
+        /**
+         * Create a ParticleSystem and force _targetScale to a specific value by
+         * calling updateFromHands with handCount:2 first, then return the system.
+         *
+         * @param {number} initialScale  The scale to seed into _targetScale
+         */
+        function makeParticleSystemWithScale(initialScale) {
+            const ps = new ParticleSystem(makeSceneStub(), makeCoordinateMapperStub(), 500);
+            ps.init();
+            // Seed _targetScale via a two-hand call (the only path that sets it)
+            ps.updateFromHands({
+                handCount: 2,
+                midpoint: new THREE.Vector3(0, 0, 0),
+                targetScale: initialScale,
+            });
+            return ps;
+        }
+
+        const EPSILON = 1e-9;
+
+        function approxEqual(a, b, eps = EPSILON) {
+            return Math.abs(a - b) <= eps;
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 12a — Core: single hand call does NOT change _targetScale
+        // Generator: fc.float({ min: 0.3, max: 3.0 }) for currentScale
+        //            fc.float({ min: 0.3, max: 3.0 }) for the (ignored) targetScale in handData
+        //            fc.tuple(fc.float(), fc.float(), fc.float()) for palmCenter
+        // Validates: Requirements 4.4, 7.4
+        // -------------------------------------------------------------------------
+        async function runProperty12a() {
+            log('\n── Property 12a: single hand call does NOT change _targetScale ──', 'title');
+            log('   Validates: Requirements 4.4, 7.4', 'info');
+            log('   Generator: fc.float({ min: 0.3, max: 3.0 }) for currentScale', 'info');
+            log('              fc.float({ min: 0.3, max: 3.0 }) for handData.targetScale (should be ignored)', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            const scaleArb = fc.float({ min: 0.3, max: 3.0, noNaN: true });
+            const coordArb = fc.tuple(
+                fc.float({ noNaN: true }),
+                fc.float({ noNaN: true }),
+                fc.float({ noNaN: true })
+            );
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        scaleArb,   // currentScale (seeded via two-hand call)
+                        scaleArb,   // handData.targetScale (must be ignored by single-hand path)
+                        coordArb,   // palmCenter position
+                        async (currentScale, ignoredScale, palmCoords) => {
+                            const ps = makeParticleSystemWithScale(currentScale);
+
+                            // Capture _targetScale before the single-hand call
+                            const scaleBefore = ps._targetScale;
+
+                            // Single-hand call — targetScale must be ignored
+                            ps.updateFromHands({
+                                handCount: 1,
+                                midpoint: new THREE.Vector3(palmCoords[0], palmCoords[1], palmCoords[2]),
+                                targetScale: ignoredScale,
+                            });
+
+                            const scaleAfter = ps._targetScale;
+
+                            if (!approxEqual(scaleAfter, scaleBefore)) {
+                                throw new Error(
+                                    `currentScale=${currentScale}, handData.targetScale=${ignoredScale}\n` +
+                                    `  _targetScale before=${scaleBefore}, after=${scaleAfter}\n` +
+                                    `  Expected _targetScale to remain ${scaleBefore}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 12a — updateFromHands({handCount:1}) → _targetScale unchanged',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 12b — Contrast: two-hand call DOES update _targetScale
+        // Ensures the single-hand invariant is not trivially satisfied by a no-op
+        // implementation that never updates scale at all.
+        // Validates: Requirements 7.1, 7.3 (scale IS updated when handCount === 2)
+        // -------------------------------------------------------------------------
+        async function runProperty12b() {
+            log('\n── Property 12b: two-hand call DOES update _targetScale (contrast check) ──', 'title');
+            log('   Validates: Requirements 7.1, 7.3', 'info');
+            log('   Generator: two distinct fc.float({ min: 0.3, max: 3.0 }) values', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            // Generate two floats that are guaranteed to differ by at least 0.01
+            const distinctScalesArb = fc
+                .tuple(
+                    fc.float({ min: 0.3, max: 1.6, noNaN: true }),
+                    fc.float({ min: 1.7, max: 3.0, noNaN: true })
+                );
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        distinctScalesArb,
+                        async ([initialScale, newScale]) => {
+                            const ps = makeParticleSystemWithScale(initialScale);
+
+                            // Two-hand call with a different scale — must update _targetScale
+                            ps.updateFromHands({
+                                handCount: 2,
+                                midpoint: new THREE.Vector3(0, 0, 0),
+                                targetScale: newScale,
+                            });
+
+                            const scaleAfter = ps._targetScale;
+
+                            if (!approxEqual(scaleAfter, newScale)) {
+                                throw new Error(
+                                    `initialScale=${initialScale}, newScale=${newScale}\n` +
+                                    `  _targetScale after two-hand call=${scaleAfter}\n` +
+                                    `  Expected _targetScale to be updated to ${newScale}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 12b — updateFromHands({handCount:2, targetScale}) → _targetScale updated',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 12c — Zero hands also does NOT change _targetScale
+        // Validates: Requirement 4.5 (no hands → keep current state)
+        // -------------------------------------------------------------------------
+        async function runProperty12c() {
+            log('\n── Property 12c: zero-hand call does NOT change _targetScale ──', 'title');
+            log('   Validates: Requirement 4.5', 'info');
+            log('   Generator: fc.float({ min: 0.3, max: 3.0 }) for currentScale', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            const scaleArb = fc.float({ min: 0.3, max: 3.0, noNaN: true });
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        scaleArb,
+                        async (currentScale) => {
+                            const ps = makeParticleSystemWithScale(currentScale);
+                            const scaleBefore = ps._targetScale;
+
+                            // Zero-hand call — targetScale must be ignored
+                            ps.updateFromHands({
+                                handCount: 0,
+                                midpoint: new THREE.Vector3(0, 0, 0),
+                                targetScale: 99, // arbitrary value that must be ignored
+                            });
+
+                            const scaleAfter = ps._targetScale;
+
+                            if (!approxEqual(scaleAfter, scaleBefore)) {
+                                throw new Error(
+                                    `currentScale=${currentScale}\n` +
+                                    `  _targetScale before=${scaleBefore}, after=${scaleAfter}\n` +
+                                    `  Expected _targetScale to remain ${scaleBefore}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 12c — updateFromHands({handCount:0}) → _targetScale unchanged',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 12d — Scale invariant holds across multiple consecutive single-hand calls
+        // Validates: Requirements 4.4, 7.4 (invariant is stable over time)
+        // -------------------------------------------------------------------------
+        async function runProperty12d() {
+            log('\n── Property 12d: scale invariant holds across multiple consecutive single-hand calls ──', 'title');
+            log('   Validates: Requirements 4.4, 7.4', 'info');
+            log('   Generator: fc.float for initialScale, fc.array of palm positions', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            const scaleArb = fc.float({ min: 0.3, max: 3.0, noNaN: true });
+            const coordArb = fc.tuple(
+                fc.float({ noNaN: true }),
+                fc.float({ noNaN: true }),
+                fc.float({ noNaN: true })
+            );
+            // Generate 2–10 consecutive single-hand calls
+            const callsArb = fc.array(coordArb, { minLength: 2, maxLength: 10 });
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        scaleArb,
+                        callsArb,
+                        async (initialScale, palmPositions) => {
+                            const ps = makeParticleSystemWithScale(initialScale);
+                            const expectedScale = ps._targetScale;
+
+                            for (const [px, py, pz] of palmPositions) {
+                                ps.updateFromHands({
+                                    handCount: 1,
+                                    midpoint: new THREE.Vector3(px, py, pz),
+                                    targetScale: Math.random() * 3, // always ignored
+                                });
+
+                                const scaleNow = ps._targetScale;
+                                if (!approxEqual(scaleNow, expectedScale)) {
+                                    throw new Error(
+                                        `After ${palmPositions.indexOf([px, py, pz]) + 1} single-hand calls:\n` +
+                                        `  initialScale=${initialScale}, _targetScale=${scaleNow}\n` +
+                                        `  Expected _targetScale to remain ${expectedScale}`
+                                    );
+                                }
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 12d — _targetScale unchanged across multiple consecutive single-hand calls',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Edge-case tests (example-based, complement the PBT properties)
+        // -------------------------------------------------------------------------
+        async function runEdgeCases() {
+            log('\n── Edge Cases (complement to Property 12) ──', 'title');
+
+            // 1. Scale at minimum boundary (0.3) — single hand must not change it
+            {
+                const ps = makeParticleSystemWithScale(0.3);
+                const before = ps._targetScale;
+                ps.updateFromHands({
+                    handCount: 1,
+                    midpoint: new THREE.Vector3(1, 2, 3),
+                    targetScale: 3.0,
+                });
+                const after = ps._targetScale;
+                recordResult(
+                    'Edge: scale at minimum (0.3) — single hand does not change it',
+                    approxEqual(after, before),
+                    `before=${before}, after=${after}`
+                );
+            }
+
+            // 2. Scale at maximum boundary (3.0) — single hand must not change it
+            {
+                const ps = makeParticleSystemWithScale(3.0);
+                const before = ps._targetScale;
+                ps.updateFromHands({
+                    handCount: 1,
+                    midpoint: new THREE.Vector3(-5, 0, 10),
+                    targetScale: 0.3,
+                });
+                const after = ps._targetScale;
+                recordResult(
+                    'Edge: scale at maximum (3.0) — single hand does not change it',
+                    approxEqual(after, before),
+                    `before=${before}, after=${after}`
+                );
+            }
+
+            // 3. Default initial scale (1.0) — single hand must not change it
+            {
+                const ps = new ParticleSystem(makeSceneStub(), makeCoordinateMapperStub(), 500);
+                ps.init();
+                const before = ps._targetScale; // should be 1.0 from constructor
+                ps.updateFromHands({
+                    handCount: 1,
+                    midpoint: new THREE.Vector3(0, 0, 0),
+                    targetScale: 2.5,
+                });
+                const after = ps._targetScale;
+                recordResult(
+                    'Edge: default initial scale (1.0) — single hand does not change it',
+                    approxEqual(after, before),
+                    `before=${before}, after=${after}`
+                );
+            }
+
+            // 4. Two-hand call sets scale, then single-hand call preserves the new scale
+            {
+                const ps = makeParticleSystemWithScale(1.0);
+                // Two-hand call updates scale to 2.0
+                ps.updateFromHands({
+                    handCount: 2,
+                    midpoint: new THREE.Vector3(0, 0, 0),
+                    targetScale: 2.0,
+                });
+                const afterTwoHand = ps._targetScale;
+                // Single-hand call must preserve 2.0
+                ps.updateFromHands({
+                    handCount: 1,
+                    midpoint: new THREE.Vector3(5, 5, 5),
+                    targetScale: 0.5,
+                });
+                const afterSingleHand = ps._targetScale;
+                recordResult(
+                    'Edge: two-hand sets scale to 2.0, then single-hand preserves 2.0',
+                    approxEqual(afterTwoHand, 2.0) && approxEqual(afterSingleHand, 2.0),
+                    `after two-hand=${afterTwoHand}, after single-hand=${afterSingleHand}`
+                );
+            }
+
+            // 5. handData with no targetScale field — single hand must not crash or change scale
+            {
+                const ps = makeParticleSystemWithScale(1.5);
+                const before = ps._targetScale;
+                ps.updateFromHands({
+                    handCount: 1,
+                    midpoint: new THREE.Vector3(0, 0, 0),
+                    // targetScale intentionally omitted
+                });
+                const after = ps._targetScale;
+                recordResult(
+                    'Edge: single hand with no targetScale field — scale unchanged, no crash',
+                    approxEqual(after, before),
+                    `before=${before}, after=${after}`
+                );
+            }
+
+            // 6. Null handData — must not crash
+            {
+                let noError = true;
+                const ps = makeParticleSystemWithScale(1.0);
+                const before = ps._targetScale;
+                try {
+                    ps.updateFromHands(null);
+                } catch (e) {
+                    noError = false;
+                }
+                const after = ps._targetScale;
+                recordResult(
+                    'Edge: null handData — no crash and scale unchanged',
+                    noError && approxEqual(after, before),
+                    `noError=${noError}, before=${before}, after=${after}`
+                );
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all tests
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting ParticleSystem single-hand scale invariant property tests…\n', 'info');
+
+            await runProperty12a();
+            await runProperty12b();
+            await runProperty12c();
+            await runProperty12d();
+            await runEdgeCases();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

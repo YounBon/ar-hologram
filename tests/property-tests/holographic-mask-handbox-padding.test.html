@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<!--
+  Property Tests: Holographic Window Mask — Padding Is Exactly 24px on All Sides
+  Feature: holographic-window-mask
+
+  Properties covered:
+    Property 7: Padding Is Exactly 24px on All Sides
+
+  Validates: Requirements 6.3
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+  Results are printed to the on-screen log and the browser console.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Property Tests — Holographic Mask Hand Box Padding</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Property Tests — Holographic Mask Hand Box Padding</h1>
+    <h2>
+        Feature: holographic-window-mask &nbsp;|&nbsp;
+        Property 7: Padding Is Exactly 24px on All Sides &nbsp;|&nbsp;
+        Validates: Requirements 6.3
+    </h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- fast-check (same version as the rest of the project) -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Minimal test harness
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Pure hand box computation — mirrors AppController._computeHandBox() logic.
+        //
+        // For each tip point p:
+        //   sx = mirrorMode ? (1 - p.x) * W : p.x * W
+        //   sy = p.y * H
+        //
+        // Tight box (before padding):
+        //   tight_left   = min(sx)
+        //   tight_right  = max(sx)
+        //   tight_top    = min(sy)
+        //   tight_bottom = max(sy)
+        //
+        // Padded box (what _computeHandBox returns):
+        //   left   = tight_left   - PADDING
+        //   top    = tight_top    - PADDING
+        //   right  = tight_right  + PADDING
+        //   bottom = tight_bottom + PADDING
+        //
+        // Returns both the tight box and the padded box for verification.
+        // -------------------------------------------------------------------------
+        const PADDING = 24;
+
+        function computeHandBox(tipPoints, mirrorMode, W, H) {
+            let minX = Infinity, maxX = -Infinity;
+            let minY = Infinity, maxY = -Infinity;
+
+            for (const p of tipPoints) {
+                const sx = mirrorMode ? (1 - p.x) * W : p.x * W;
+                const sy = p.y * H;
+                if (sx < minX) minX = sx;
+                if (sx > maxX) maxX = sx;
+                if (sy < minY) minY = sy;
+                if (sy > maxY) maxY = sy;
+            }
+
+            return {
+                // Tight box (before padding)
+                tight: {
+                    left: minX,
+                    top: minY,
+                    right: maxX,
+                    bottom: maxY,
+                },
+                // Padded box (what AppController returns)
+                padded: {
+                    left: minX - PADDING,
+                    top: minY - PADDING,
+                    right: maxX + PADDING,
+                    bottom: maxY + PADDING,
+                },
+            };
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 7: Padding Is Exactly 24px on All Sides
+        // Feature: holographic-window-mask, Property 7: Padding Is Exactly 24px on All Sides
+        // Validates: Requirements 6.3
+        //
+        // For any 4 finger tip points { x, y } in normalized space [0, 1] and any
+        // mirrorMode, the padded hand box must satisfy:
+        //
+        //   box.left   = tight_left   - 24
+        //   box.top    = tight_top    - 24
+        //   box.right  = tight_right  + 24
+        //   box.bottom = tight_bottom + 24
+        // -------------------------------------------------------------------------
+        async function runProperty7() {
+            log('\n── Property 7: Padding Is Exactly 24px on All Sides ──', 'title');
+            log('   Validates: Requirements 6.3', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        // 4 tip points in normalized [0, 1] space (same arbitraries as 10.1)
+                        fc.array(
+                            fc.record({
+                                x: fc.float({ min: 0, max: 1, noNaN: true }),
+                                y: fc.float({ min: 0, max: 1, noNaN: true }),
+                            }),
+                            { minLength: 4, maxLength: 4 }
+                        ),
+                        // Mirror mode flag
+                        fc.boolean(),
+                        // Viewport dimensions
+                        fc.tuple(
+                            fc.integer({ min: 320, max: 3840 }),
+                            fc.integer({ min: 240, max: 2160 })
+                        ),
+                        async (tipPoints, mirrorMode, [W, H]) => {
+                            const { tight, padded } = computeHandBox(tipPoints, mirrorMode, W, H);
+
+                            // Each padded edge must be exactly PADDING away from the tight edge.
+                            // We use strict equality here — padding is an integer constant so
+                            // there is no floating-point rounding to worry about.
+                            if (padded.left !== tight.left - PADDING) {
+                                throw new Error(
+                                    `left: padded=${padded.left}, expected tight.left - 24 = ${tight.left - PADDING} ` +
+                                    `(tight.left=${tight.left})`
+                                );
+                            }
+                            if (padded.top !== tight.top - PADDING) {
+                                throw new Error(
+                                    `top: padded=${padded.top}, expected tight.top - 24 = ${tight.top - PADDING} ` +
+                                    `(tight.top=${tight.top})`
+                                );
+                            }
+                            if (padded.right !== tight.right + PADDING) {
+                                throw new Error(
+                                    `right: padded=${padded.right}, expected tight.right + 24 = ${tight.right + PADDING} ` +
+                                    `(tight.right=${tight.right})`
+                                );
+                            }
+                            if (padded.bottom !== tight.bottom + PADDING) {
+                                throw new Error(
+                                    `bottom: padded=${padded.bottom}, expected tight.bottom + 24 = ${tight.bottom + PADDING} ` +
+                                    `(tight.bottom=${tight.bottom})`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 7 — Padded box is exactly 24px larger on every side than the tight box',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 7b: Padding is symmetric — left/right and top/bottom offsets
+        // are equal regardless of the input points or viewport size.
+        // -------------------------------------------------------------------------
+        async function runProperty7b() {
+            log('\n── Property 7b: Padding is symmetric on all four sides ──', 'title');
+            log('   Validates: Requirements 6.3 (uniform 24px padding)', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.array(
+                            fc.record({
+                                x: fc.float({ min: 0, max: 1, noNaN: true }),
+                                y: fc.float({ min: 0, max: 1, noNaN: true }),
+                            }),
+                            { minLength: 4, maxLength: 4 }
+                        ),
+                        fc.boolean(),
+                        fc.tuple(
+                            fc.integer({ min: 320, max: 3840 }),
+                            fc.integer({ min: 240, max: 2160 })
+                        ),
+                        async (tipPoints, mirrorMode, [W, H]) => {
+                            const { tight, padded } = computeHandBox(tipPoints, mirrorMode, W, H);
+
+                            const leftOffset = tight.left - padded.left;    // should be +24
+                            const topOffset = tight.top - padded.top;     // should be +24
+                            const rightOffset = padded.right - tight.right;   // should be +24
+                            const bottomOffset = padded.bottom - tight.bottom;  // should be +24
+
+                            if (leftOffset !== rightOffset) {
+                                throw new Error(
+                                    `Asymmetric x-padding: left offset=${leftOffset}, right offset=${rightOffset}`
+                                );
+                            }
+                            if (topOffset !== bottomOffset) {
+                                throw new Error(
+                                    `Asymmetric y-padding: top offset=${topOffset}, bottom offset=${bottomOffset}`
+                                );
+                            }
+                            if (leftOffset !== topOffset) {
+                                throw new Error(
+                                    `Padding differs between axes: x offset=${leftOffset}, y offset=${topOffset}`
+                                );
+                            }
+                            if (leftOffset !== PADDING) {
+                                throw new Error(
+                                    `Padding value is ${leftOffset}, expected ${PADDING}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 7b — Padding is symmetric: all four offsets equal exactly 24px',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 7c: Padded box is always strictly larger than the tight box
+        // (unless all 4 points are identical, in which case tight box is a point
+        // and padded box is still 48×48 px).
+        // -------------------------------------------------------------------------
+        async function runProperty7c() {
+            log('\n── Property 7c: Padded box is always larger than the tight box ──', 'title');
+            log('   Validates: Requirements 6.3 (padding expands the box)', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.array(
+                            fc.record({
+                                x: fc.float({ min: 0, max: 1, noNaN: true }),
+                                y: fc.float({ min: 0, max: 1, noNaN: true }),
+                            }),
+                            { minLength: 4, maxLength: 4 }
+                        ),
+                        fc.boolean(),
+                        fc.tuple(
+                            fc.integer({ min: 320, max: 3840 }),
+                            fc.integer({ min: 240, max: 2160 })
+                        ),
+                        async (tipPoints, mirrorMode, [W, H]) => {
+                            const { tight, padded } = computeHandBox(tipPoints, mirrorMode, W, H);
+
+                            // Padded box must strictly extend beyond the tight box on every side
+                            if (padded.left >= tight.left) {
+                                throw new Error(
+                                    `padded.left (${padded.left}) should be < tight.left (${tight.left})`
+                                );
+                            }
+                            if (padded.top >= tight.top) {
+                                throw new Error(
+                                    `padded.top (${padded.top}) should be < tight.top (${tight.top})`
+                                );
+                            }
+                            if (padded.right <= tight.right) {
+                                throw new Error(
+                                    `padded.right (${padded.right}) should be > tight.right (${tight.right})`
+                                );
+                            }
+                            if (padded.bottom <= tight.bottom) {
+                                throw new Error(
+                                    `padded.bottom (${padded.bottom}) should be > tight.bottom (${tight.bottom})`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 7c — Padded box strictly extends beyond the tight box on all sides',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all properties
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting Holographic Mask Hand Box Padding property tests…\n', 'info');
+
+            await runProperty7();
+            await runProperty7b();
+            await runProperty7c();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

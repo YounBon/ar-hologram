@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<!--
+  Property Test: AdaptiveQualityManager Adaptive Quality
+  Feature: webcam-particle-face-ar, Property 15: Adaptive Quality Reduces Count After Sustained Low FPS
+
+  "For any sequence of FPS values consistently below 45 for at least 3 seconds,
+   AdaptiveQualityManager must reduce particle count by 50% (clamped to minimum 500).
+   For any sequence of FPS values consistently above 55 for at least 5 seconds,
+   particle count must increase 10% every 2 seconds until reaching targetCount."
+
+  Validates: Requirements 10.4, 10.4a
+  "WHEN FPS giảm xuống dưới 45 trong 3 giây liên tiếp, THE System SHALL tự động
+   giảm số lượng Particle xuống 50% để khôi phục hiệu suất."
+  "WHEN FPS phục hồi trên 55 trong 5 giây liên tiếp, THE System SHALL tăng dần
+   số lượng Particle trở lại giá trị người dùng đã cài đặt, tăng 10% mỗi 2 giây."
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+  Results are printed to the on-screen log and the browser console.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Property Test — AdaptiveQualityManager Adaptive Quality</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Property Test — AdaptiveQualityManager Adaptive Quality</h1>
+    <h2>
+        Feature: webcam-particle-face-ar &nbsp;|&nbsp;
+        Property 15 &nbsp;|&nbsp;
+        Validates: Requirements 10.4, 10.4a
+    </h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- fast-check (same version as the rest of the project) -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <!-- CONSTANTS — full set matching constants.js -->
+    <script>
+        const CONSTANTS = {
+            DEPTH_SCALE: 50,
+            DEFAULT_PARTICLE_COUNT: 2000,
+            MIN_PARTICLES: 500,
+            MAX_PARTICLES: 5000,
+            LERP_POSITION: 0.1,
+            LERP_SCALE: 0.08,
+            LERP_BACK: 0.01,
+            JITTER_RADIUS_NORMALIZED: 0.02,
+            HAND_DIST_MIN: 0.05,
+            HAND_DIST_MAX: 0.8,
+            SCALE_MIN: 0.3,
+            SCALE_MAX: 3.0,
+            CAMERA_FOV: 75,
+            CAMERA_Z: 100,
+            CAMERA_NEAR: 0.1,
+            CAMERA_FAR: 1000,
+            // Adaptive quality thresholds
+            LOW_FPS_THRESHOLD: 45,
+            HIGH_FPS_THRESHOLD: 55,
+            LOW_FPS_DURATION: 3,
+            HIGH_FPS_DURATION: 5,
+            RESTORE_INTERVAL: 2,
+            RESTORE_STEP: 0.1,
+        };
+    </script>
+
+    <!-- Module under test -->
+    <script src="../../js/AdaptiveQualityManager.js"></script>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Minimal test harness
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Stubs
+        // -------------------------------------------------------------------------
+
+        /**
+         * Create a minimal ParticleSystem stub with a mutable currentCount.
+         * setParticleCount clamps to [MIN_PARTICLES, MAX_PARTICLES].
+         *
+         * @param {number} initialCount
+         */
+        function makeParticleSystemStub(initialCount = 2000) {
+            let count = Math.max(
+                CONSTANTS.MIN_PARTICLES,
+                Math.min(CONSTANTS.MAX_PARTICLES, Math.round(initialCount))
+            );
+            return {
+                get currentCount() { return count; },
+                setParticleCount(n) {
+                    count = Math.max(
+                        CONSTANTS.MIN_PARTICLES,
+                        Math.min(CONSTANTS.MAX_PARTICLES, Math.round(n))
+                    );
+                },
+            };
+        }
+
+        /**
+         * Create a minimal StateManager stub with a fixed particleCount.
+         *
+         * @param {number} particleCount  The user-set target count
+         */
+        function makeStateManagerStub(particleCount = 2000) {
+            return {
+                get particleCount() { return particleCount; },
+            };
+        }
+
+        /**
+         * Create an AdaptiveQualityManager with the given initial particle count
+         * and target count.
+         *
+         * @param {number} initialCount   Current particle count in the system
+         * @param {number} targetCount    User-set target (stateManager.particleCount)
+         */
+        function makeAQM(initialCount = 2000, targetCount = 2000) {
+            const ps = makeParticleSystemStub(initialCount);
+            const sm = makeStateManagerStub(targetCount);
+            return { aqm: new AdaptiveQualityManager(ps, sm), ps, sm };
+        }
+
+        /**
+         * Drive the AQM through a sequence of FPS values, each for deltaTime seconds.
+         * Returns the final particle count.
+         *
+         * @param {AdaptiveQualityManager} aqm
+         * @param {number[]} fpsSequence   Array of FPS values
+         * @param {number}   deltaTime     Seconds per frame (default 1/60)
+         */
+        function driveAQM(aqm, fpsSequence, deltaTime = 1 / 60) {
+            for (const fps of fpsSequence) {
+                aqm.update(fps, deltaTime);
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 15a: Low FPS for >= 3 seconds → particle count reduced by 50%
+        // Feature: webcam-particle-face-ar, Property 15: Adaptive Quality Reduces Count After Sustained Low FPS
+        // Validates: Requirements 10.4
+        // -------------------------------------------------------------------------
+        async function runProperty15a() {
+            log('\n── Property 15a: Low FPS (< 45) for >= 3 seconds → count reduced by 50% ──', 'title');
+            log('   Validates: Requirement 10.4', 'info');
+            log('   Generator: fc.array(fc.constant(30), {minLength:180,maxLength:360})', 'info');
+            log('              (180 frames at 1/60s each = 3 seconds of FPS=30 < 45)', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        // Simulate >= 3 seconds of FPS < 45 at 60 FPS (180 frames = 3s)
+                        fc.array(fc.constant(30), { minLength: 180, maxLength: 360 }),
+                        // Initial particle count in [1000, 5000] so 50% >= 500 (min)
+                        fc.integer({ min: 1000, max: 5000 }),
+                        async (fpsSequence, initialCount) => {
+                            const { aqm, ps } = makeAQM(initialCount, initialCount);
+                            const countBefore = ps.currentCount;
+
+                            driveAQM(aqm, fpsSequence, 1 / 60);
+
+                            const countAfter = ps.currentCount;
+
+                            // After >= 3 seconds of FPS < 45, count must have been reduced
+                            // The reduction is 50%, clamped to MIN_PARTICLES (500)
+                            const expectedReduced = Math.max(
+                                CONSTANTS.MIN_PARTICLES,
+                                Math.round(countBefore * 0.5)
+                            );
+
+                            // The count should be <= the expected reduced value
+                            // (it may have been reduced multiple times if the sequence is long enough)
+                            if (countAfter > expectedReduced) {
+                                throw new Error(
+                                    `Expected count to be reduced to at most ${expectedReduced} ` +
+                                    `(50% of ${countBefore}), but got ${countAfter}.\n` +
+                                    `  Sequence length: ${fpsSequence.length} frames ` +
+                                    `(${(fpsSequence.length / 60).toFixed(2)}s at 60 FPS)`
+                                );
+                            }
+
+                            // Count must be >= MIN_PARTICLES
+                            if (countAfter < CONSTANTS.MIN_PARTICLES) {
+                                throw new Error(
+                                    `Count ${countAfter} is below MIN_PARTICLES (${CONSTANTS.MIN_PARTICLES})`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 15a — FPS < 45 for >= 3s → particle count reduced by 50% (clamped to 500)',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 15b: High FPS for >= 5 seconds → count increases 10% every 2s
+        // Feature: webcam-particle-face-ar, Property 15: Adaptive Quality Reduces Count After Sustained Low FPS
+        // Validates: Requirements 10.4a
+        // -------------------------------------------------------------------------
+        async function runProperty15b() {
+            log('\n── Property 15b: High FPS (> 55) for >= 5 seconds → count increases 10% every 2s ──', 'title');
+            log('   Validates: Requirement 10.4a', 'info');
+            log('   Generator: fc.array(fc.constant(60), {minLength:300,maxLength:600})', 'info');
+            log('              (300 frames at 1/60s each = 5 seconds of FPS=60 > 55)', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        // Simulate >= 5 seconds of FPS > 55 at 60 FPS (300 frames = 5s)
+                        fc.array(fc.constant(60), { minLength: 300, maxLength: 600 }),
+                        // Start with a reduced count (50–90% of target) to test restoration
+                        fc.integer({ min: 500, max: 4000 }),
+                        async (fpsSequence, reducedCount) => {
+                            // Target is always higher than reducedCount to allow restoration
+                            const targetCount = Math.min(
+                                CONSTANTS.MAX_PARTICLES,
+                                Math.round(reducedCount * 1.5) + 500
+                            );
+
+                            const { aqm, ps } = makeAQM(reducedCount, targetCount);
+                            const countBefore = ps.currentCount;
+
+                            driveAQM(aqm, fpsSequence, 1 / 60);
+
+                            const countAfter = ps.currentCount;
+                            const totalSeconds = fpsSequence.length / 60;
+
+                            // After >= 5 seconds of FPS > 55, count should have increased
+                            // (unless it was already at targetCount)
+                            if (countBefore < targetCount) {
+                                // Count should have increased toward targetCount
+                                if (countAfter <= countBefore) {
+                                    throw new Error(
+                                        `Expected count to increase from ${countBefore} toward ${targetCount}, ` +
+                                        `but got ${countAfter}.\n` +
+                                        `  Sequence: ${fpsSequence.length} frames (${totalSeconds.toFixed(2)}s)`
+                                    );
+                                }
+
+                                // Count must not exceed targetCount
+                                if (countAfter > targetCount) {
+                                    throw new Error(
+                                        `Count ${countAfter} exceeded targetCount ${targetCount}`
+                                    );
+                                }
+                            }
+
+                            // Count must always be within valid range
+                            if (countAfter < CONSTANTS.MIN_PARTICLES || countAfter > CONSTANTS.MAX_PARTICLES) {
+                                throw new Error(
+                                    `Count ${countAfter} is outside valid range ` +
+                                    `[${CONSTANTS.MIN_PARTICLES}, ${CONSTANTS.MAX_PARTICLES}]`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 15b — FPS > 55 for >= 5s → count increases toward targetCount (10% every 2s)',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 15c: Count never goes below MIN_PARTICLES regardless of FPS
+        // Validates: Requirements 10.4
+        // -------------------------------------------------------------------------
+        async function runProperty15c() {
+            log('\n── Property 15c: Count never drops below MIN_PARTICLES (500) ──', 'title');
+            log('   Validates: Requirement 10.4 (clamp to minimum 500)', 'info');
+            log('   Generator: fc.array(fc.constant(30), {minLength:180,maxLength:1080})', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        // Many seconds of low FPS — could trigger multiple reductions
+                        fc.array(fc.constant(30), { minLength: 180, maxLength: 1080 }),
+                        // Start at minimum to test the clamp
+                        fc.integer({ min: 500, max: 1000 }),
+                        async (fpsSequence, initialCount) => {
+                            const { aqm, ps } = makeAQM(initialCount, initialCount);
+
+                            driveAQM(aqm, fpsSequence, 1 / 60);
+
+                            const countAfter = ps.currentCount;
+
+                            if (countAfter < CONSTANTS.MIN_PARTICLES) {
+                                throw new Error(
+                                    `Count ${countAfter} dropped below MIN_PARTICLES ` +
+                                    `(${CONSTANTS.MIN_PARTICLES}) after sustained low FPS.\n` +
+                                    `  Initial: ${initialCount}, Sequence: ${fpsSequence.length} frames`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 15c — count never drops below MIN_PARTICLES (500) regardless of sustained low FPS',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Edge-case tests (example-based, complement the PBT properties)
+        // -------------------------------------------------------------------------
+        async function runEdgeCases() {
+            log('\n── Edge Cases (complement to Property 15) ──', 'title');
+
+            // Edge 1: Exactly 3 seconds of low FPS (180 frames at 60 FPS) → reduction triggered
+            {
+                const { aqm, ps } = makeAQM(2000, 2000);
+                const countBefore = ps.currentCount;
+                // 180 frames × (1/60)s = exactly 3.0 seconds
+                driveAQM(aqm, Array(180).fill(30), 1 / 60);
+                const countAfter = ps.currentCount;
+                const expected = Math.max(CONSTANTS.MIN_PARTICLES, Math.round(countBefore * 0.5));
+                recordResult(
+                    'Edge: exactly 3s of FPS=30 → count reduced to 50% (1000)',
+                    countAfter === expected,
+                    `Expected ${expected}, got ${countAfter}`
+                );
+            }
+
+            // Edge 2: Just under 3 seconds of low FPS → no reduction yet
+            {
+                const { aqm, ps } = makeAQM(2000, 2000);
+                const countBefore = ps.currentCount;
+                // 179 frames × (1/60)s ≈ 2.983 seconds — just under threshold
+                driveAQM(aqm, Array(179).fill(30), 1 / 60);
+                const countAfter = ps.currentCount;
+                recordResult(
+                    'Edge: 179 frames (< 3s) of FPS=30 → no reduction yet',
+                    countAfter === countBefore,
+                    `Expected ${countBefore} (no change), got ${countAfter}`
+                );
+            }
+
+            // Edge 3: Low FPS then high FPS — timers reset correctly
+            {
+                const { aqm, ps } = makeAQM(2000, 2000);
+                // 2 seconds of low FPS (not enough to trigger)
+                driveAQM(aqm, Array(120).fill(30), 1 / 60);
+                const countAfterLow = ps.currentCount;
+                // Then 1 second of high FPS — should reset lowFPSTimer
+                driveAQM(aqm, Array(60).fill(60), 1 / 60);
+                // Then 2 more seconds of low FPS — timer restarted, still not 3s
+                driveAQM(aqm, Array(120).fill(30), 1 / 60);
+                const countAfterReset = ps.currentCount;
+                recordResult(
+                    'Edge: 2s low → 1s high → 2s low → no reduction (timer resets)',
+                    countAfterLow === 2000 && countAfterReset === 2000,
+                    `After 2s low: ${countAfterLow}, after reset+2s low: ${countAfterReset} (both should be 2000)`
+                );
+            }
+
+            // Edge 4: Count at minimum (500) — reduction clamps to 500
+            {
+                const { aqm, ps } = makeAQM(500, 500);
+                driveAQM(aqm, Array(180).fill(30), 1 / 60);
+                const countAfter = ps.currentCount;
+                recordResult(
+                    'Edge: count at MIN (500) → reduction clamps to 500',
+                    countAfter === 500,
+                    `Expected 500, got ${countAfter}`
+                );
+            }
+
+            // Edge 5: Exactly 5 seconds of high FPS after reduction → restoration begins
+            {
+                const { aqm, ps } = makeAQM(1000, 2000);
+                const countBefore = ps.currentCount; // 1000
+                // 300 frames × (1/60)s = exactly 5.0 seconds of FPS > 55
+                driveAQM(aqm, Array(300).fill(60), 1 / 60);
+                const countAfter = ps.currentCount;
+                // After 5s high FPS, restoreTimer also reaches 2s (since it accumulates alongside highFPSTimer)
+                // So at least one 10% increase should have occurred
+                recordResult(
+                    'Edge: exactly 5s of FPS=60 after reduction → count increased toward target',
+                    countAfter > countBefore,
+                    `Expected count > ${countBefore}, got ${countAfter}`
+                );
+            }
+
+            // Edge 6: Restoration stops at targetCount — never exceeds it
+            {
+                const { aqm, ps } = makeAQM(1000, 2000);
+                // 600 frames = 10 seconds of high FPS — enough for multiple 10% increases
+                driveAQM(aqm, Array(600).fill(60), 1 / 60);
+                const countAfter = ps.currentCount;
+                recordResult(
+                    'Edge: 10s of high FPS → count does not exceed targetCount (2000)',
+                    countAfter <= 2000,
+                    `Expected count <= 2000, got ${countAfter}`
+                );
+            }
+
+            // Edge 7: FPS exactly at threshold (45) — not low enough to accumulate
+            {
+                const { aqm, ps } = makeAQM(2000, 2000);
+                const countBefore = ps.currentCount;
+                // FPS = 45 is NOT < 45, so lowFPSTimer should not accumulate
+                driveAQM(aqm, Array(300).fill(45), 1 / 60);
+                const countAfter = ps.currentCount;
+                recordResult(
+                    'Edge: FPS exactly 45 (not < 45) → no reduction',
+                    countAfter === countBefore,
+                    `Expected ${countBefore} (no change), got ${countAfter}`
+                );
+            }
+
+            // Edge 8: FPS exactly at high threshold (55) — not high enough to accumulate
+            {
+                const { aqm, ps } = makeAQM(1000, 2000);
+                const countBefore = ps.currentCount;
+                // FPS = 55 is NOT > 55, so highFPSTimer should not accumulate
+                driveAQM(aqm, Array(600).fill(55), 1 / 60);
+                const countAfter = ps.currentCount;
+                recordResult(
+                    'Edge: FPS exactly 55 (not > 55) → no restoration',
+                    countAfter === countBefore,
+                    `Expected ${countBefore} (no change), got ${countAfter}`
+                );
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all tests
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting AdaptiveQualityManager property tests…\n', 'info');
+
+            await runProperty15a();
+            await runProperty15b();
+            await runProperty15c();
+            await runEdgeCases();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

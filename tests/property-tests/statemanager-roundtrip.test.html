@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<!--
+  Property Test: StateManager AppState Round-Trip Through localStorage
+  Feature: webcam-particle-face-ar, Property 16: AppState Round-Trip Through localStorage
+
+  Validates: Requirement 11.6
+  "THE System SHALL lưu trạng thái các tùy chọn người dùng vào localStorage
+   và khôi phục khi tải lại trang."
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+  Results are printed to the on-screen log and the browser console.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Property Test — StateManager Round-Trip</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Property Test — StateManager Round-Trip</h1>
+    <h2>Feature: webcam-particle-face-ar &nbsp;|&nbsp; Property 16 &nbsp;|&nbsp; Validates: Requirement 11.6</h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- Dependencies (same CDN versions as index.html) -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <!-- Stub CONSTANTS so StateManager can resolve MIN/MAX_PARTICLES without the full app -->
+    <script>
+        const CONSTANTS = {
+            MIN_PARTICLES: 500,
+            MAX_PARTICLES: 5000,
+            DEFAULT_PARTICLE_COUNT: 2000,
+        };
+    </script>
+
+    <!-- Module under test -->
+    <script src="../../js/StateManager.js"></script>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Minimal test harness
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Helpers
+        // -------------------------------------------------------------------------
+
+        /**
+         * Create a fresh StateManager backed by an isolated localStorage key so
+         * tests don't interfere with the real app state or each other.
+         */
+        function makeIsolatedStateManager(testKey) {
+            // Temporarily override the storage key for isolation
+            const original = StateManager.STORAGE_KEY;
+            StateManager.STORAGE_KEY = testKey;
+            // Clear any leftover data from a previous run
+            localStorage.removeItem(testKey);
+            const sm = new StateManager();
+            StateManager.STORAGE_KEY = original;
+            return { sm, testKey };
+        }
+
+        /**
+         * Apply an AppState object to a StateManager instance, then save.
+         */
+        function applyAndSave(sm, state, testKey) {
+            // Temporarily point to the isolated key while saving
+            const original = StateManager.STORAGE_KEY;
+            StateManager.STORAGE_KEY = testKey;
+            sm._particleCount = state.particleCount;
+            sm._intensityMode = state.intensityMode;
+            sm._mirrorMode = state.mirrorMode;
+            sm._isRunning = state.isRunning;
+            sm.save();
+            StateManager.STORAGE_KEY = original;
+        }
+
+        /**
+         * Load a fresh StateManager from the isolated key and return its state.
+         */
+        function loadFresh(testKey) {
+            const original = StateManager.STORAGE_KEY;
+            StateManager.STORAGE_KEY = testKey;
+            localStorage.removeItem('webcam-particle-ar-state'); // guard: don't bleed
+            const sm2 = new StateManager();
+            // load() is called in constructor, but it reads from STORAGE_KEY which is
+            // currently set to testKey — so we get the isolated data.
+            StateManager.STORAGE_KEY = original;
+            return {
+                particleCount: sm2._particleCount,
+                intensityMode: sm2._intensityMode,
+                mirrorMode: sm2._mirrorMode,
+                isRunning: sm2._isRunning,
+            };
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 16: AppState Round-Trip Through localStorage
+        // Feature: webcam-particle-face-ar, Property 16: AppState Round-Trip Through localStorage
+        // -------------------------------------------------------------------------
+        async function runProperty16() {
+            log('\n── Property 16: AppState Round-Trip Through localStorage ──', 'title');
+            log('   Validates: Requirement 11.6', 'info');
+            log('   Iterations: 100 (fast-check default)\n', 'info');
+
+            const TEST_KEY = 'pbt-statemanager-roundtrip-test';
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        // Arbitrary: generate a valid AppState
+                        fc.record({
+                            particleCount: fc.integer({ min: 500, max: 5000 }),
+                            intensityMode: fc.boolean(),
+                            mirrorMode: fc.boolean(),
+                            isRunning: fc.boolean(),
+                        }),
+                        async (state) => {
+                            // --- Save ---
+                            const original = StateManager.STORAGE_KEY;
+                            StateManager.STORAGE_KEY = TEST_KEY;
+                            localStorage.removeItem(TEST_KEY);
+
+                            const sm = new StateManager();
+                            sm._particleCount = state.particleCount;
+                            sm._intensityMode = state.intensityMode;
+                            sm._mirrorMode = state.mirrorMode;
+                            sm._isRunning = state.isRunning;
+                            sm.save();
+
+                            // --- Load (fresh instance, same isolated key) ---
+                            // STORAGE_KEY must still point to TEST_KEY when sm2 is constructed
+                            // so that load() reads from the isolated slot, not the real app slot.
+                            const sm2 = new StateManager();
+
+                            // Restore original key only after sm2 has finished loading
+                            StateManager.STORAGE_KEY = original;
+
+                            // --- Assert round-trip equality ---
+                            const ok =
+                                sm2._particleCount === state.particleCount &&
+                                sm2._intensityMode === state.intensityMode &&
+                                sm2._mirrorMode === state.mirrorMode &&
+                                sm2._isRunning === state.isRunning;
+
+                            if (!ok) {
+                                // Provide a readable diff in the fast-check counterexample
+                                throw new Error(
+                                    `Round-trip mismatch.\n` +
+                                    `  Input:    ${JSON.stringify(state)}\n` +
+                                    `  Loaded:   particleCount=${sm2._particleCount}, ` +
+                                    `intensityMode=${sm2._intensityMode}, ` +
+                                    `mirrorMode=${sm2._mirrorMode}, ` +
+                                    `isRunning=${sm2._isRunning}`
+                                );
+                            }
+
+                            // Cleanup
+                            localStorage.removeItem(TEST_KEY);
+                        }
+                    ),
+                    { numRuns: 100, verbose: true }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            } finally {
+                localStorage.removeItem(TEST_KEY);
+            }
+
+            recordResult('Property 16 — save() then load() returns identical AppState', passed, failDetail);
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 16 — Edge-case sub-properties (example-based, complement PBT)
+        // -------------------------------------------------------------------------
+        async function runEdgeCases() {
+            log('\n── Edge Cases (complement to Property 16) ──', 'title');
+
+            const TEST_KEY = 'pbt-statemanager-edge-test';
+
+            // Edge 1: Boundary values — particleCount at min (500) and max (5000)
+            for (const count of [500, 5000]) {
+                const original = StateManager.STORAGE_KEY;
+                StateManager.STORAGE_KEY = TEST_KEY;
+                localStorage.removeItem(TEST_KEY);
+
+                const sm = new StateManager();
+                sm._particleCount = count;
+                sm._intensityMode = false;
+                sm._mirrorMode = false;
+                sm._isRunning = false;
+                sm.save();
+
+                const sm2 = new StateManager();
+                StateManager.STORAGE_KEY = original;
+                localStorage.removeItem(TEST_KEY);
+
+                recordResult(
+                    `Edge: particleCount boundary ${count} survives round-trip`,
+                    sm2._particleCount === count,
+                    `Expected ${count}, got ${sm2._particleCount}`
+                );
+            }
+
+            // Edge 2: Corrupted localStorage data → falls back to defaults
+            {
+                const original = StateManager.STORAGE_KEY;
+                StateManager.STORAGE_KEY = TEST_KEY;
+                localStorage.setItem(TEST_KEY, '{ this is not valid JSON !!!');
+                const sm = new StateManager();
+                StateManager.STORAGE_KEY = original;
+                localStorage.removeItem(TEST_KEY);
+
+                recordResult(
+                    'Edge: corrupted localStorage data → defaults restored',
+                    sm._particleCount === 2000 &&
+                    sm._intensityMode === false &&
+                    sm._mirrorMode === false &&
+                    sm._isRunning === true,
+                    `Got: particleCount=${sm._particleCount}, intensityMode=${sm._intensityMode}, ` +
+                    `mirrorMode=${sm._mirrorMode}, isRunning=${sm._isRunning}`
+                );
+            }
+
+            // Edge 3: Missing key → defaults
+            {
+                const original = StateManager.STORAGE_KEY;
+                StateManager.STORAGE_KEY = TEST_KEY;
+                localStorage.removeItem(TEST_KEY);
+                const sm = new StateManager();
+                StateManager.STORAGE_KEY = original;
+
+                recordResult(
+                    'Edge: missing localStorage key → defaults restored',
+                    sm._particleCount === 2000 &&
+                    sm._intensityMode === false &&
+                    sm._mirrorMode === false &&
+                    sm._isRunning === true,
+                    `Got: particleCount=${sm._particleCount}, intensityMode=${sm._intensityMode}, ` +
+                    `mirrorMode=${sm._mirrorMode}, isRunning=${sm._isRunning}`
+                );
+            }
+
+            // Edge 4: Setter auto-saves — set via public setter, reload, verify
+            {
+                const original = StateManager.STORAGE_KEY;
+                StateManager.STORAGE_KEY = TEST_KEY;
+                localStorage.removeItem(TEST_KEY);
+
+                const sm = new StateManager();
+                sm.particleCount = 3500;
+                sm.intensityMode = true;
+                sm.mirrorMode = true;
+                sm.isRunning = false;
+
+                const sm2 = new StateManager();
+                StateManager.STORAGE_KEY = original;
+                localStorage.removeItem(TEST_KEY);
+
+                recordResult(
+                    'Edge: public setters auto-save and reload correctly',
+                    sm2._particleCount === 3500 &&
+                    sm2._intensityMode === true &&
+                    sm2._mirrorMode === true &&
+                    sm2._isRunning === false,
+                    `Got: particleCount=${sm2._particleCount}, intensityMode=${sm2._intensityMode}, ` +
+                    `mirrorMode=${sm2._mirrorMode}, isRunning=${sm2._isRunning}`
+                );
+            }
+
+            // Edge 5: particleCount out-of-range in storage → clamped on load
+            {
+                const original = StateManager.STORAGE_KEY;
+                StateManager.STORAGE_KEY = TEST_KEY;
+                localStorage.setItem(TEST_KEY, JSON.stringify({
+                    particleCount: 99999,   // above MAX
+                    intensityMode: false,
+                    mirrorMode: false,
+                    isRunning: true,
+                }));
+                const sm = new StateManager();
+                StateManager.STORAGE_KEY = original;
+                localStorage.removeItem(TEST_KEY);
+
+                recordResult(
+                    'Edge: out-of-range particleCount in storage → clamped to 5000',
+                    sm._particleCount === 5000,
+                    `Expected 5000, got ${sm._particleCount}`
+                );
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all tests
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting property tests…\n', 'info');
+
+            await runProperty16();
+            await runEdgeCases();
+
+            // Summary
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        // Kick off after DOM is ready
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

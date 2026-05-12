@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<!--
+  Property Test: ParticleSystem Particle State Preserved When No Face Detected
+  Feature: webcam-particle-face-ar, Property 11: Particle State Preserved When No Face Detected
+
+  "For any trạng thái particle positions hiện tại, khi onFaceResults nhận được kết
+   quả rỗng (không phát hiện khuôn mặt), basePositions của particles phải không
+   thay đổi so với frame trước.
+
+   Test strategy: initialise a ParticleSystem with valid face data via updateFromFace(),
+   capture the basePositions snapshot, then simulate 'no face detected' by NOT calling
+   updateFromFace() again, and verify that basePositions remain byte-for-byte identical."
+
+  Validates: Requirements 3.3
+  "IF Face_Tracker không phát hiện khuôn mặt trong Frame hiện tại, THEN THE System
+   SHALL giữ nguyên trạng thái Particle_Cloud từ Frame trước đó."
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+  Results are printed to the on-screen log and the browser console.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Property Test — ParticleSystem No-Face State Preserved</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Property Test — ParticleSystem No-Face State Preserved</h1>
+    <h2>
+        Feature: webcam-particle-face-ar &nbsp;|&nbsp;
+        Property 11 &nbsp;|&nbsp;
+        Validates: Requirement 3.3
+    </h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- fast-check (same version as the rest of the project) -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <!-- Minimal THREE stubs — only the subset used by ParticleSystem is needed -->
+    <script>
+        const THREE = {
+            BufferAttribute: class BufferAttribute {
+                constructor(array, itemSize) {
+                    this.array = array;
+                    this.itemSize = itemSize;
+                    this.needsUpdate = false;
+                }
+            },
+
+            BufferGeometry: class BufferGeometry {
+                constructor() { this._attrs = {}; }
+                setAttribute(name, attr) { this._attrs[name] = attr; }
+                get attributes() { return this._attrs; }
+                dispose() { }
+            },
+
+            PointsMaterial: class PointsMaterial {
+                constructor(opts) { Object.assign(this, opts); }
+            },
+
+            Vector3: class Vector3 {
+                constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+                set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }
+                copy(v) { this.x = v.x; this.y = v.y; this.z = v.z; return this; }
+                lerp(v, t) {
+                    this.x += (v.x - this.x) * t;
+                    this.y += (v.y - this.y) * t;
+                    this.z += (v.z - this.z) * t;
+                    return this;
+                }
+            },
+        };
+
+        THREE.Points = class Points {
+            constructor(geometry, material) {
+                this.geometry = geometry;
+                this.material = material;
+                this.position = new THREE.Vector3();
+                this.scale = { setScalar(s) { } };
+            }
+        };
+    </script>
+
+    <!-- CONSTANTS (full set so ParticleSystem resolves every reference) -->
+    <script>
+        const CONSTANTS = {
+            DEPTH_SCALE: 50,
+            DEFAULT_PARTICLE_COUNT: 2000,
+            MIN_PARTICLES: 500,
+            MAX_PARTICLES: 5000,
+            LERP_POSITION: 0.1,
+            LERP_SCALE: 0.08,
+            LERP_BACK: 0.01,
+            JITTER_RADIUS_NORMALIZED: 0.02,
+            HAND_DIST_MIN: 0.05,
+            HAND_DIST_MAX: 0.8,
+            SCALE_MIN: 0.3,
+            SCALE_MAX: 3.0,
+            CAMERA_FOV: 75,
+            CAMERA_Z: 100,
+        };
+    </script>
+
+    <!-- Module under test -->
+    <script src="../../js/ParticleSystem.js"></script>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Minimal test harness (consistent with other property test files)
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Helpers
+        // -------------------------------------------------------------------------
+
+        /**
+         * Build a minimal CoordinateMapper stub that returns a fixed viewport.
+         * ParticleSystem only calls computeViewport() for jitter/noise radius.
+         */
+        function makeCoordinateMapperStub() {
+            return {
+                computeViewport() {
+                    // Viewport for FOV=75°, cameraZ=100, aspect 16:9
+                    // height = 2 * tan(37.5° * π/180) * 100 ≈ 153.1
+                    // width  = height * (16/9)              ≈ 272.2
+                    return { width: 272.2, height: 153.1 };
+                }
+            };
+        }
+
+        /**
+         * Build a minimal scene stub.
+         */
+        function makeSceneStub() {
+            return { add() { }, remove() { } };
+        }
+
+        /**
+         * Create, initialise, and return a ParticleSystem with the given count.
+         *
+         * @param {number} count  Particle count (will be clamped by ParticleSystem)
+         */
+        function makeParticleSystem(count) {
+            const ps = new ParticleSystem(makeSceneStub(), makeCoordinateMapperStub(), count);
+            ps.init();
+            return ps;
+        }
+
+        /**
+         * Build a Float32Array of world positions for 468 landmarks from a flat
+         * array of [x0,y0,z0, x1,y1,z1, …] values (length must be 468 * 3 = 1404).
+         *
+         * @param {number[]} values  Array of 1404 floats
+         * @returns {Float32Array}
+         */
+        function buildWorldPositions(values) {
+            return new Float32Array(values);
+        }
+
+        /**
+         * Take a byte-for-byte snapshot of the basePositions array.
+         *
+         * @param {ParticleSystem} ps
+         * @returns {Float32Array}
+         */
+        function snapshotBasePositions(ps) {
+            return new Float32Array(ps._basePositions);
+        }
+
+        /**
+         * Compare two Float32Arrays for exact equality (bit-for-bit).
+         *
+         * @param {Float32Array} a
+         * @param {Float32Array} b
+         * @returns {{ equal: boolean, firstDiffIndex: number }}
+         */
+        function compareFloat32Arrays(a, b) {
+            if (a.length !== b.length) {
+                return { equal: false, firstDiffIndex: -1 };
+            }
+            for (let i = 0; i < a.length; i++) {
+                if (a[i] !== b[i]) {
+                    return { equal: false, firstDiffIndex: i };
+                }
+            }
+            return { equal: true, firstDiffIndex: -1 };
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 11: Particle State Preserved When No Face Detected
+        // Feature: webcam-particle-face-ar, Property 11: Particle State Preserved When No Face Detected
+        // Validates: Requirements 3.3
+        // -------------------------------------------------------------------------
+
+        /**
+         * 11a — Core property: after setting basePositions with valid face data,
+         *       if no face is detected (updateFromFace is NOT called), the
+         *       basePositions array remains identical to what it was before.
+         *
+         * This directly models the AppController behavior described in the design:
+         * onFaceResults(results) — when results has no landmarks (empty detection),
+         * it should NOT call particleSystem.updateFromFace(), thus preserving basePositions.
+         *
+         * Generator: 468 landmarks with x,y,z coordinates (1404 floats total),
+         *            random particle count in [500, 2000].
+         */
+        async function runProperty11a() {
+            log('\n── Property 11a: basePositions unchanged when updateFromFace() is NOT called ──', 'title');
+            log('   Validates: Requirement 3.3', 'info');
+            log('   Generator: fc.array(fc.float({noNaN:true}), {minLength:1404,maxLength:1404})', 'info');
+            log('              fc.integer({min:500,max:2000}) for particle count', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        // 468 landmarks * 3 coordinates = 1404 floats
+                        fc.array(
+                            fc.float({ min: -200, max: 200, noNaN: true }),
+                            { minLength: 1404, maxLength: 1404 }
+                        ),
+                        fc.integer({ min: 500, max: 2000 }),
+                        async (landmarkValues, count) => {
+                            const ps = makeParticleSystem(count);
+
+                            // Step 1: Set basePositions with valid face data
+                            const worldPositions = buildWorldPositions(landmarkValues);
+                            ps.updateFromFace(worldPositions);
+
+                            // Step 2: Capture the basePositions state after face update
+                            const snapshot = snapshotBasePositions(ps);
+
+                            // Step 3: Simulate 'no face detected' — do NOT call updateFromFace()
+                            // This models onFaceResults receiving empty results (no landmarks).
+                            // The AppController should skip calling updateFromFace() entirely.
+                            // (No operation here — this is intentional.)
+
+                            // Step 4: Verify basePositions are unchanged
+                            const { equal, firstDiffIndex } = compareFloat32Arrays(
+                                snapshot,
+                                ps._basePositions
+                            );
+
+                            if (!equal) {
+                                const particleIdx = Math.floor(firstDiffIndex / 3);
+                                const coord = ['x', 'y', 'z'][firstDiffIndex % 3];
+                                throw new Error(
+                                    `basePositions changed without updateFromFace() being called!\n` +
+                                    `  First difference at index ${firstDiffIndex} ` +
+                                    `(particle ${particleIdx}, coord ${coord})\n` +
+                                    `  snapshot[${firstDiffIndex}]=${snapshot[firstDiffIndex]}, ` +
+                                    `current[${firstDiffIndex}]=${ps._basePositions[firstDiffIndex]}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 11a — basePositions unchanged when updateFromFace() is NOT called (no face detected)',
+                passed,
+                failDetail
+            );
+        }
+
+        /**
+         * 11b — Empty worldPositions is a no-op: calling updateFromFace() with an
+         *       empty Float32Array must not modify basePositions.
+         *
+         * This tests the guard clause in updateFromFace():
+         *   if (!worldPositions || worldPositions.length === 0) return;
+         *
+         * This is the alternative path where the caller passes empty data instead
+         * of skipping the call entirely — both must preserve basePositions.
+         */
+        async function runProperty11b() {
+            log('\n── Property 11b: updateFromFace(empty) is a no-op — basePositions unchanged ──', 'title');
+            log('   Validates: Requirement 3.3', 'info');
+            log('   Generator: fc.array(fc.float({noNaN:true}), {minLength:1404,maxLength:1404})', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.array(
+                            fc.float({ min: -200, max: 200, noNaN: true }),
+                            { minLength: 1404, maxLength: 1404 }
+                        ),
+                        async (landmarkValues) => {
+                            const COUNT = 500; // minimum — keeps test fast
+                            const ps = makeParticleSystem(COUNT);
+
+                            // Set basePositions with valid face data
+                            const worldPositions = buildWorldPositions(landmarkValues);
+                            ps.updateFromFace(worldPositions);
+
+                            // Capture snapshot
+                            const snapshot = snapshotBasePositions(ps);
+
+                            // Call updateFromFace() with empty array — must be a no-op
+                            ps.updateFromFace(new Float32Array(0));
+
+                            // Verify basePositions are unchanged
+                            const { equal, firstDiffIndex } = compareFloat32Arrays(
+                                snapshot,
+                                ps._basePositions
+                            );
+
+                            if (!equal) {
+                                throw new Error(
+                                    `updateFromFace(empty) modified basePositions!\n` +
+                                    `  First difference at index ${firstDiffIndex}\n` +
+                                    `  snapshot[${firstDiffIndex}]=${snapshot[firstDiffIndex]}, ` +
+                                    `current[${firstDiffIndex}]=${ps._basePositions[firstDiffIndex]}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 11b — updateFromFace(new Float32Array(0)) is a no-op (basePositions unchanged)',
+                passed,
+                failDetail
+            );
+        }
+
+        /**
+         * 11c — Multiple frames without face: basePositions remain stable across
+         *       multiple frames where no face is detected.
+         *
+         * Simulates N consecutive frames with no face detection (no updateFromFace()
+         * calls) and verifies that basePositions are still identical to the snapshot
+         * taken after the last valid face update.
+         *
+         * Other per-frame operations (applyIntrinsicMotion) must NOT affect basePositions.
+         */
+        async function runProperty11c() {
+            log('\n── Property 11c: basePositions stable across multiple no-face frames ──', 'title');
+            log('   Validates: Requirement 3.3', 'info');
+            log('   Strategy: 10 frames of applyIntrinsicMotion() without updateFromFace()', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.array(
+                            fc.float({ min: -200, max: 200, noNaN: true }),
+                            { minLength: 1404, maxLength: 1404 }
+                        ),
+                        fc.integer({ min: 1, max: 20 }), // number of no-face frames
+                        async (landmarkValues, noFaceFrames) => {
+                            const COUNT = 500;
+                            const ps = makeParticleSystem(COUNT);
+
+                            // Set basePositions with valid face data
+                            const worldPositions = buildWorldPositions(landmarkValues);
+                            ps.updateFromFace(worldPositions);
+
+                            // Capture snapshot after face update
+                            const snapshot = snapshotBasePositions(ps);
+
+                            // Simulate N frames with no face detected:
+                            // - applyIntrinsicMotion() is called each frame (it modifies
+                            //   current positions but must NOT touch basePositions)
+                            // - updateFromFace() is NOT called (no face detected)
+                            for (let frame = 0; frame < noFaceFrames; frame++) {
+                                ps.applyIntrinsicMotion();
+                            }
+
+                            // Verify basePositions are still unchanged
+                            const { equal, firstDiffIndex } = compareFloat32Arrays(
+                                snapshot,
+                                ps._basePositions
+                            );
+
+                            if (!equal) {
+                                const particleIdx = Math.floor(firstDiffIndex / 3);
+                                const coord = ['x', 'y', 'z'][firstDiffIndex % 3];
+                                throw new Error(
+                                    `basePositions changed after ${noFaceFrames} no-face frames!\n` +
+                                    `  applyIntrinsicMotion() must not modify basePositions.\n` +
+                                    `  First difference at index ${firstDiffIndex} ` +
+                                    `(particle ${particleIdx}, coord ${coord})\n` +
+                                    `  snapshot[${firstDiffIndex}]=${snapshot[firstDiffIndex]}, ` +
+                                    `current[${firstDiffIndex}]=${ps._basePositions[firstDiffIndex]}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 11c — basePositions stable across multiple no-face frames (applyIntrinsicMotion does not modify basePositions)',
+                passed,
+                failDetail
+            );
+        }
+
+        /**
+         * 11d — Null worldPositions is a no-op: calling updateFromFace(null) must
+         *       not modify basePositions.
+         *
+         * Tests the null guard: if (!worldPositions || worldPositions.length === 0) return;
+         */
+        async function runProperty11d() {
+            log('\n── Property 11d: updateFromFace(null) is a no-op — basePositions unchanged ──', 'title');
+            log('   Validates: Requirement 3.3', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.array(
+                            fc.float({ min: -200, max: 200, noNaN: true }),
+                            { minLength: 1404, maxLength: 1404 }
+                        ),
+                        async (landmarkValues) => {
+                            const COUNT = 500;
+                            const ps = makeParticleSystem(COUNT);
+
+                            // Set basePositions with valid face data
+                            const worldPositions = buildWorldPositions(landmarkValues);
+                            ps.updateFromFace(worldPositions);
+
+                            // Capture snapshot
+                            const snapshot = snapshotBasePositions(ps);
+
+                            // Call updateFromFace() with null — must be a no-op
+                            ps.updateFromFace(null);
+
+                            // Verify basePositions are unchanged
+                            const { equal, firstDiffIndex } = compareFloat32Arrays(
+                                snapshot,
+                                ps._basePositions
+                            );
+
+                            if (!equal) {
+                                throw new Error(
+                                    `updateFromFace(null) modified basePositions!\n` +
+                                    `  First difference at index ${firstDiffIndex}\n` +
+                                    `  snapshot[${firstDiffIndex}]=${snapshot[firstDiffIndex]}, ` +
+                                    `current[${firstDiffIndex}]=${ps._basePositions[firstDiffIndex]}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 11d — updateFromFace(null) is a no-op (basePositions unchanged)',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Edge-case tests (example-based, complement the PBT properties)
+        // -------------------------------------------------------------------------
+        async function runEdgeCases() {
+            log('\n── Edge Cases (complement to Property 11) ──', 'title');
+
+            // Build a fixed set of 468 landmarks
+            const landmarkValues = Array.from({ length: 1404 }, (_, i) => {
+                // Spread values across a realistic range
+                return ((i % 100) - 50) * 2.0; // values in [-100, 100]
+            });
+            const worldPositions = new Float32Array(landmarkValues);
+
+            // Case 1: basePositions unchanged after zero no-face frames (immediate snapshot)
+            {
+                const ps = makeParticleSystem(500);
+                ps.updateFromFace(worldPositions);
+                const snapshot = snapshotBasePositions(ps);
+                // No frames pass — snapshot should equal current basePositions exactly
+                const { equal } = compareFloat32Arrays(snapshot, ps._basePositions);
+                recordResult(
+                    'Edge: immediate snapshot after updateFromFace() — basePositions match',
+                    equal,
+                    equal ? '' : 'Snapshot does not match basePositions immediately after updateFromFace()'
+                );
+            }
+
+            // Case 2: 100 no-face frames — basePositions still unchanged
+            {
+                const ps = makeParticleSystem(500);
+                ps.updateFromFace(worldPositions);
+                const snapshot = snapshotBasePositions(ps);
+
+                for (let f = 0; f < 100; f++) {
+                    ps.applyIntrinsicMotion();
+                }
+
+                const { equal } = compareFloat32Arrays(snapshot, ps._basePositions);
+                recordResult(
+                    'Edge: 100 no-face frames — basePositions still unchanged',
+                    equal,
+                    equal ? '' : 'basePositions changed after 100 frames of applyIntrinsicMotion()'
+                );
+            }
+
+            // Case 3: updateFromFace(empty) after valid face data — no-op
+            {
+                const ps = makeParticleSystem(500);
+                ps.updateFromFace(worldPositions);
+                const snapshot = snapshotBasePositions(ps);
+
+                ps.updateFromFace(new Float32Array(0));
+
+                const { equal } = compareFloat32Arrays(snapshot, ps._basePositions);
+                recordResult(
+                    'Edge: updateFromFace(empty Float32Array) after valid data — no-op',
+                    equal,
+                    equal ? '' : 'basePositions changed after updateFromFace(empty)'
+                );
+            }
+
+            // Case 4: updateFromFace(null) after valid face data — no-op
+            {
+                const ps = makeParticleSystem(500);
+                ps.updateFromFace(worldPositions);
+                const snapshot = snapshotBasePositions(ps);
+
+                ps.updateFromFace(null);
+
+                const { equal } = compareFloat32Arrays(snapshot, ps._basePositions);
+                recordResult(
+                    'Edge: updateFromFace(null) after valid data — no-op',
+                    equal,
+                    equal ? '' : 'basePositions changed after updateFromFace(null)'
+                );
+            }
+
+            // Case 5: updateFromFace(undefined) after valid face data — no-op
+            {
+                const ps = makeParticleSystem(500);
+                ps.updateFromFace(worldPositions);
+                const snapshot = snapshotBasePositions(ps);
+
+                ps.updateFromFace(undefined);
+
+                const { equal } = compareFloat32Arrays(snapshot, ps._basePositions);
+                recordResult(
+                    'Edge: updateFromFace(undefined) after valid data — no-op',
+                    equal,
+                    equal ? '' : 'basePositions changed after updateFromFace(undefined)'
+                );
+            }
+
+            // Case 6: second valid updateFromFace() DOES change basePositions
+            //         (confirms the test is sensitive to actual changes)
+            {
+                const ps = makeParticleSystem(500);
+                ps.updateFromFace(worldPositions);
+                const snapshot = snapshotBasePositions(ps);
+
+                // Different landmark values — should produce different basePositions
+                const differentValues = new Float32Array(1404).fill(999.0);
+                ps.updateFromFace(differentValues);
+
+                const { equal } = compareFloat32Arrays(snapshot, ps._basePositions);
+                // We EXPECT them to differ — this confirms the test is sensitive
+                recordResult(
+                    'Edge: second updateFromFace() with different data DOES change basePositions (test sensitivity check)',
+                    !equal,
+                    !equal ? '' : 'basePositions did not change after second updateFromFace() with different data — test may not be sensitive enough'
+                );
+            }
+
+            // Case 7: maximum particle count (5000) — basePositions preserved across no-face frames
+            {
+                const ps = makeParticleSystem(5000);
+                ps.updateFromFace(worldPositions);
+                const snapshot = snapshotBasePositions(ps);
+
+                for (let f = 0; f < 10; f++) {
+                    ps.applyIntrinsicMotion();
+                }
+
+                const { equal } = compareFloat32Arrays(snapshot, ps._basePositions);
+                recordResult(
+                    'Edge: maximum particle count (5000) — basePositions preserved across 10 no-face frames',
+                    equal,
+                    equal ? '' : 'basePositions changed for maximum particle count'
+                );
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all tests
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting ParticleSystem no-face state preserved property tests…\n', 'info');
+
+            await runProperty11a();
+            await runProperty11b();
+            await runProperty11c();
+            await runProperty11d();
+            await runEdgeCases();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

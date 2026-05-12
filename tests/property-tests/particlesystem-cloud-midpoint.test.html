@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<!--
+  Property Test: ParticleSystem Cloud Position Is Midpoint of Two Palm Centers
+  Feature: webcam-particle-face-ar, Property 9: Cloud Position Is Midpoint of Two Palm Centers
+
+  "When two hands are detected, ParticleSystem._targetPosition must equal the
+   midpoint of the two palm centers passed via handData.midpoint."
+
+  Validates: Requirements 5.3, 5.3a
+  "WHEN Hand_Tracker phát hiện đủ hai bàn tay, THE Particle_Cloud SHALL hiển thị
+   tại điểm trung điểm giữa hai Palm_Center."
+  "WHEN Hand_Tracker chỉ phát hiện đúng một bàn tay, THE Particle_Cloud SHALL
+   di chuyển đến vị trí Palm_Center của bàn tay đó và duy trì kích thước hiện tại."
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+  Results are printed to the on-screen log and the browser console.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Property Test — ParticleSystem Cloud Midpoint</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Property Test — ParticleSystem Cloud Position Is Midpoint</h1>
+    <h2>
+        Feature: webcam-particle-face-ar &nbsp;|&nbsp;
+        Property 9 &nbsp;|&nbsp;
+        Validates: Requirements 5.3, 5.3a
+    </h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- fast-check (same version as the rest of the project) -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <!-- THREE.js stub — only the subset used by ParticleSystem is needed -->
+    <script>
+        // Feature: webcam-particle-face-ar, Property 9: Cloud Position Is Midpoint of Two Palm Centers
+        const THREE = {
+            // Minimal BufferAttribute
+            BufferAttribute: class BufferAttribute {
+                constructor(array, itemSize) {
+                    this.array = array;
+                    this.itemSize = itemSize;
+                    this.needsUpdate = false;
+                }
+            },
+
+            // Minimal BufferGeometry
+            BufferGeometry: class BufferGeometry {
+                constructor() { this._attrs = {}; }
+                setAttribute(name, attr) { this._attrs[name] = attr; }
+                get attributes() { return this._attrs; }
+                dispose() { }
+            },
+
+            // Minimal PointsMaterial
+            PointsMaterial: class PointsMaterial {
+                constructor(opts) { Object.assign(this, opts); }
+            },
+
+            // Minimal Vector3 — must support .copy(v) used by updateFromHands
+            Vector3: class Vector3 {
+                constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+                set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }
+                copy(v) { this.x = v.x; this.y = v.y; this.z = v.z; return this; }
+                lerp(v, t) {
+                    this.x += (v.x - this.x) * t;
+                    this.y += (v.y - this.y) * t;
+                    this.z += (v.z - this.z) * t;
+                    return this;
+                }
+            },
+        };
+
+        // Fix forward reference: Points uses THREE.Vector3 before it is defined above
+        THREE.Points = class Points {
+            constructor(geometry, material) {
+                this.geometry = geometry;
+                this.material = material;
+                this.position = new THREE.Vector3();
+                this.scale = { setScalar(s) { } };
+            }
+        };
+    </script>
+
+    <!-- CONSTANTS (full set so ParticleSystem resolves every reference) -->
+    <script>
+        const CONSTANTS = {
+            DEPTH_SCALE: 50,
+            DEFAULT_PARTICLE_COUNT: 2000,
+            MIN_PARTICLES: 500,
+            MAX_PARTICLES: 5000,
+            LERP_POSITION: 0.1,
+            LERP_SCALE: 0.08,
+            LERP_BACK: 0.01,
+            JITTER_RADIUS_NORMALIZED: 0.02,
+            HAND_DIST_MIN: 0.05,
+            HAND_DIST_MAX: 0.8,
+            SCALE_MIN: 0.3,
+            SCALE_MAX: 3.0,
+            CAMERA_FOV: 75,
+            CAMERA_Z: 100,
+        };
+    </script>
+
+    <!-- Module under test -->
+    <script src="../../js/ParticleSystem.js"></script>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Minimal test harness (consistent with other property test files)
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Helpers
+        // -------------------------------------------------------------------------
+
+        /**
+         * Build a minimal CoordinateMapper stub that returns a fixed viewport.
+         */
+        function makeCoordinateMapperStub() {
+            return {
+                computeViewport() {
+                    return { width: 272.2, height: 153.1 };
+                }
+            };
+        }
+
+        /**
+         * Build a minimal scene stub that accepts add/remove without error.
+         */
+        function makeSceneStub() {
+            return {
+                add(obj) { },
+                remove(obj) { },
+            };
+        }
+
+        /**
+         * Create and initialise a ParticleSystem with the given initial count.
+         */
+        function makeParticleSystem(initialCount = 2000) {
+            const scene = makeSceneStub();
+            const mapper = makeCoordinateMapperStub();
+            const ps = new ParticleSystem(scene, mapper, initialCount);
+            ps.init();
+            return ps;
+        }
+
+        /**
+         * Tolerance for floating-point comparisons.
+         */
+        const EPSILON = 1e-6;
+
+        function approxEqual(a, b, eps = EPSILON) {
+            return Math.abs(a - b) <= eps;
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 9a — Core: targetPosition equals midpoint when handCount === 2
+        // Validates: Requirement 5.3
+        // -------------------------------------------------------------------------
+        async function runProperty9a() {
+            log('\n── Property 9a: targetPosition equals midpoint when handCount === 2 ──', 'title');
+            log('   Validates: Requirement 5.3', 'info');
+            log('   Generator: fc.tuple(fc.float({noNaN:true}), ...) × 2 for p1, p2', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            const coordArb = fc.tuple(
+                fc.float({ noNaN: true }),
+                fc.float({ noNaN: true }),
+                fc.float({ noNaN: true })
+            );
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        coordArb,
+                        coordArb,
+                        async (p1, p2) => {
+                            const ps = makeParticleSystem(2000);
+
+                            // Compute midpoint from p1 and p2
+                            const midpoint = {
+                                x: (p1[0] + p2[0]) / 2,
+                                y: (p1[1] + p2[1]) / 2,
+                                z: (p1[2] + p2[2]) / 2,
+                            };
+
+                            // Build a THREE.Vector3 midpoint to pass to updateFromHands
+                            const midpointVec = new THREE.Vector3(midpoint.x, midpoint.y, midpoint.z);
+
+                            ps.updateFromHands({
+                                handCount: 2,
+                                midpoint: midpointVec,
+                                targetScale: 1.0,
+                            });
+
+                            const tp = ps._targetPosition;
+                            if (
+                                !approxEqual(tp.x, midpoint.x) ||
+                                !approxEqual(tp.y, midpoint.y) ||
+                                !approxEqual(tp.z, midpoint.z)
+                            ) {
+                                throw new Error(
+                                    `p1=(${p1}), p2=(${p2})\n` +
+                                    `  midpoint=(${midpoint.x}, ${midpoint.y}, ${midpoint.z})\n` +
+                                    `  _targetPosition=(${tp.x}, ${tp.y}, ${tp.z})`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 9a — updateFromHands({handCount:2, midpoint}) → _targetPosition equals midpoint',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 9b — Single hand: targetPosition equals palmCenter (not midpoint)
+        // Validates: Requirement 5.3a
+        // -------------------------------------------------------------------------
+        async function runProperty9b() {
+            log('\n── Property 9b: targetPosition equals palmCenter when handCount === 1 ──', 'title');
+            log('   Validates: Requirement 5.3a', 'info');
+            log('   Generator: fc.tuple(fc.float({noNaN:true}), ...) for p1', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            const coordArb = fc.tuple(
+                fc.float({ noNaN: true }),
+                fc.float({ noNaN: true }),
+                fc.float({ noNaN: true })
+            );
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        coordArb,
+                        async (p1) => {
+                            const ps = makeParticleSystem(2000);
+
+                            // For single hand, midpoint = palmCenter[0]
+                            const palmCenterVec = new THREE.Vector3(p1[0], p1[1], p1[2]);
+
+                            ps.updateFromHands({
+                                handCount: 1,
+                                midpoint: palmCenterVec,
+                            });
+
+                            const tp = ps._targetPosition;
+                            if (
+                                !approxEqual(tp.x, p1[0]) ||
+                                !approxEqual(tp.y, p1[1]) ||
+                                !approxEqual(tp.z, p1[2])
+                            ) {
+                                throw new Error(
+                                    `palmCenter=(${p1[0]}, ${p1[1]}, ${p1[2]})\n` +
+                                    `  _targetPosition=(${tp.x}, ${tp.y}, ${tp.z})`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 9b — updateFromHands({handCount:1, midpoint}) → _targetPosition equals palmCenter',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 9c — Zero hands: targetPosition unchanged
+        // -------------------------------------------------------------------------
+        async function runProperty9c() {
+            log('\n── Property 9c: targetPosition unchanged when handCount === 0 ──', 'title');
+            log('   Validates: Requirement 5.3 (no-op when no hands)', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            const coordArb = fc.tuple(
+                fc.float({ noNaN: true }),
+                fc.float({ noNaN: true }),
+                fc.float({ noNaN: true })
+            );
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        coordArb,
+                        async (initial) => {
+                            const ps = makeParticleSystem(2000);
+
+                            // Set an initial targetPosition via a single-hand call
+                            const initialVec = new THREE.Vector3(initial[0], initial[1], initial[2]);
+                            ps.updateFromHands({ handCount: 1, midpoint: initialVec });
+
+                            // Capture the position before the zero-hand call
+                            const beforeX = ps._targetPosition.x;
+                            const beforeY = ps._targetPosition.y;
+                            const beforeZ = ps._targetPosition.z;
+
+                            // Zero-hand call — should not change targetPosition
+                            ps.updateFromHands({
+                                handCount: 0,
+                                midpoint: new THREE.Vector3(0, 0, 0),
+                            });
+
+                            const tp = ps._targetPosition;
+                            if (
+                                !approxEqual(tp.x, beforeX) ||
+                                !approxEqual(tp.y, beforeY) ||
+                                !approxEqual(tp.z, beforeZ)
+                            ) {
+                                throw new Error(
+                                    `before=(${beforeX}, ${beforeY}, ${beforeZ})\n` +
+                                    `  after=(${tp.x}, ${tp.y}, ${tp.z})`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 9c — updateFromHands({handCount:0}) → _targetPosition unchanged',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 9d — Midpoint symmetry: midpoint(p1, p2) === midpoint(p2, p1)
+        // -------------------------------------------------------------------------
+        async function runProperty9d() {
+            log('\n── Property 9d: Midpoint symmetry — midpoint(p1,p2) === midpoint(p2,p1) ──', 'title');
+            log('   Validates: Requirement 5.3 (midpoint is commutative)', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            const coordArb = fc.tuple(
+                fc.float({ noNaN: true }),
+                fc.float({ noNaN: true }),
+                fc.float({ noNaN: true })
+            );
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        coordArb,
+                        coordArb,
+                        async (p1, p2) => {
+                            // Midpoint p1→p2
+                            const mid12 = {
+                                x: (p1[0] + p2[0]) / 2,
+                                y: (p1[1] + p2[1]) / 2,
+                                z: (p1[2] + p2[2]) / 2,
+                            };
+
+                            // Midpoint p2→p1
+                            const mid21 = {
+                                x: (p2[0] + p1[0]) / 2,
+                                y: (p2[1] + p1[1]) / 2,
+                                z: (p2[2] + p1[2]) / 2,
+                            };
+
+                            // Verify both produce the same _targetPosition
+                            const ps1 = makeParticleSystem(2000);
+                            ps1.updateFromHands({
+                                handCount: 2,
+                                midpoint: new THREE.Vector3(mid12.x, mid12.y, mid12.z),
+                                targetScale: 1.0,
+                            });
+
+                            const ps2 = makeParticleSystem(2000);
+                            ps2.updateFromHands({
+                                handCount: 2,
+                                midpoint: new THREE.Vector3(mid21.x, mid21.y, mid21.z),
+                                targetScale: 1.0,
+                            });
+
+                            const tp1 = ps1._targetPosition;
+                            const tp2 = ps2._targetPosition;
+
+                            if (
+                                !approxEqual(tp1.x, tp2.x) ||
+                                !approxEqual(tp1.y, tp2.y) ||
+                                !approxEqual(tp1.z, tp2.z)
+                            ) {
+                                throw new Error(
+                                    `p1=(${p1}), p2=(${p2})\n` +
+                                    `  mid(p1,p2)=(${tp1.x}, ${tp1.y}, ${tp1.z})\n` +
+                                    `  mid(p2,p1)=(${tp2.x}, ${tp2.y}, ${tp2.z})`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 9d — midpoint(p1,p2) === midpoint(p2,p1) (symmetry)',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Edge-case tests (example-based, complement the PBT properties)
+        // -------------------------------------------------------------------------
+        async function runEdgeCases() {
+            log('\n── Edge Cases (complement to Property 9) ──', 'title');
+
+            // 1. Both hands at same position → midpoint equals that position
+            {
+                const ps = makeParticleSystem(2000);
+                const pos = new THREE.Vector3(5, -3, 10);
+                ps.updateFromHands({ handCount: 2, midpoint: pos, targetScale: 1.0 });
+                const tp = ps._targetPosition;
+                recordResult(
+                    'Edge: both hands at same position → midpoint equals that position',
+                    approxEqual(tp.x, 5) && approxEqual(tp.y, -3) && approxEqual(tp.z, 10),
+                    `_targetPosition=(${tp.x}, ${tp.y}, ${tp.z}), expected=(5, -3, 10)`
+                );
+            }
+
+            // 2. Hands at opposite extremes → midpoint is (0, 0, 0)
+            {
+                const ps = makeParticleSystem(2000);
+                // midpoint of (-100,0,0) and (100,0,0) is (0,0,0)
+                const mid = new THREE.Vector3(0, 0, 0);
+                ps.updateFromHands({ handCount: 2, midpoint: mid, targetScale: 1.0 });
+                const tp = ps._targetPosition;
+                recordResult(
+                    'Edge: hands at opposite extremes (±100,0,0) → midpoint is (0,0,0)',
+                    approxEqual(tp.x, 0) && approxEqual(tp.y, 0) && approxEqual(tp.z, 0),
+                    `_targetPosition=(${tp.x}, ${tp.y}, ${tp.z}), expected=(0, 0, 0)`
+                );
+            }
+
+            // 3. handCount: 0 with non-zero midpoint → targetPosition unchanged
+            {
+                const ps = makeParticleSystem(2000);
+                // Set initial position
+                ps.updateFromHands({ handCount: 1, midpoint: new THREE.Vector3(7, 8, 9) });
+                const beforeX = ps._targetPosition.x;
+                const beforeY = ps._targetPosition.y;
+                const beforeZ = ps._targetPosition.z;
+                // Zero-hand call with non-zero midpoint — should be ignored
+                ps.updateFromHands({ handCount: 0, midpoint: new THREE.Vector3(99, 99, 99) });
+                const tp = ps._targetPosition;
+                recordResult(
+                    'Edge: handCount:0 with non-zero midpoint → targetPosition unchanged',
+                    approxEqual(tp.x, beforeX) && approxEqual(tp.y, beforeY) && approxEqual(tp.z, beforeZ),
+                    `before=(${beforeX}, ${beforeY}, ${beforeZ}), after=(${tp.x}, ${tp.y}, ${tp.z})`
+                );
+            }
+
+            // 4. handCount: 2 with targetScale: 1.5 → targetScale updated AND targetPosition updated
+            {
+                const ps = makeParticleSystem(2000);
+                const mid = new THREE.Vector3(3, 4, 5);
+                ps.updateFromHands({ handCount: 2, midpoint: mid, targetScale: 1.5 });
+                const tp = ps._targetPosition;
+                const ts = ps._targetScale;
+                const posOk = approxEqual(tp.x, 3) && approxEqual(tp.y, 4) && approxEqual(tp.z, 5);
+                const scaleOk = approxEqual(ts, 1.5);
+                recordResult(
+                    'Edge: handCount:2 with targetScale:1.5 → both targetPosition and targetScale updated',
+                    posOk && scaleOk,
+                    `_targetPosition=(${tp.x}, ${tp.y}, ${tp.z}), _targetScale=${ts}`
+                );
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all tests
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting ParticleSystem cloud midpoint property tests…\n', 'info');
+
+            await runProperty9a();
+            await runProperty9b();
+            await runProperty9c();
+            await runProperty9d();
+            await runEdgeCases();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

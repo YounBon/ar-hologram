@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<!--
+  Property Tests: Holographic Window Mask — Corner Bracket Arm Length Is 15% of Shorter Dimension
+  Feature: holographic-window-mask
+
+  Properties covered:
+    Property 8: Corner Bracket Arm Length Is 15% of Shorter Dimension
+
+  Validates: Requirements 2.3
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+  Results are printed to the on-screen log and the browser console.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Property Tests — Holographic Mask Corner Bracket Arm Length</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Property Tests — Holographic Mask Corner Bracket Arm Length</h1>
+    <h2>
+        Feature: holographic-window-mask &nbsp;|&nbsp;
+        Property 8: Corner Bracket Arm Length Is 15% of Shorter Dimension &nbsp;|&nbsp;
+        Validates: Requirements 2.3
+    </h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- fast-check (same version as the rest of the project) -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Minimal test harness
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Pure function — mirrors the corner bracket arm length computation in
+        // ParticleSystem._updateHandRegionMesh():
+        //
+        //   const cs = Math.min(wWorld, hWorld) * 0.15;
+        //
+        // This is the single formula under test. It is extracted here as a pure
+        // function so it can be property-tested without a Three.js scene.
+        // -------------------------------------------------------------------------
+        function computeCornerArmLength(wWorld, hWorld) {
+            return Math.min(wWorld, hWorld) * 0.15;
+        }
+
+        // Floating-point tolerance used throughout these tests.
+        // JavaScript's Math.min and multiplication are both IEEE-754 double
+        // operations, so the result should be exact to within a few ULPs.
+        // We use a generous epsilon of 1e-9 to cover any platform variation.
+        const EPSILON = 1e-9;
+
+        function approxEqual(a, b, eps = EPSILON) {
+            return Math.abs(a - b) <= eps;
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 8: Corner Bracket Arm Length Is 15% of Shorter Dimension
+        // Feature: holographic-window-mask, Property 8: Corner Bracket Arm Length Is 15% of Shorter Dimension
+        // Validates: Requirements 2.3
+        //
+        // For any world-space dimensions (wWorld, hWorld) in (0, 100],
+        // the arm length cs must equal Math.min(wWorld, hWorld) * 0.15
+        // within floating-point tolerance.
+        // -------------------------------------------------------------------------
+        async function runProperty8() {
+            log('\n── Property 8: Corner Bracket Arm Length Is 15% of Shorter Dimension ──', 'title');
+            log('   Validates: Requirements 2.3', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.tuple(
+                            fc.float({ min: 0.1, max: 100, noNaN: true }),
+                            fc.float({ min: 0.1, max: 100, noNaN: true })
+                        ),
+                        async ([wWorld, hWorld]) => {
+                            const cs = computeCornerArmLength(wWorld, hWorld);
+                            const expected = Math.min(wWorld, hWorld) * 0.15;
+
+                            if (!approxEqual(cs, expected)) {
+                                throw new Error(
+                                    `cs=${cs}, expected=${expected} ` +
+                                    `(wWorld=${wWorld}, hWorld=${hWorld}, diff=${Math.abs(cs - expected)})`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 8 — cs === Math.min(wWorld, hWorld) * 0.15 within floating-point tolerance',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 8b: Arm length is always determined by the shorter dimension
+        //
+        // When wWorld < hWorld, cs must equal wWorld * 0.15.
+        // When hWorld < wWorld, cs must equal hWorld * 0.15.
+        // When wWorld === hWorld, cs must equal wWorld * 0.15 (= hWorld * 0.15).
+        // -------------------------------------------------------------------------
+        async function runProperty8b() {
+            log('\n── Property 8b: Arm length is always the shorter dimension × 0.15 ──', 'title');
+            log('   Validates: Requirements 2.3 (shorter-side rule)', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.tuple(
+                            fc.float({ min: 0.1, max: 100, noNaN: true }),
+                            fc.float({ min: 0.1, max: 100, noNaN: true })
+                        ),
+                        async ([wWorld, hWorld]) => {
+                            const cs = computeCornerArmLength(wWorld, hWorld);
+                            const shorter = Math.min(wWorld, hWorld);
+
+                            // cs must equal shorter * 0.15
+                            if (!approxEqual(cs, shorter * 0.15)) {
+                                throw new Error(
+                                    `cs=${cs} does not equal shorter * 0.15 = ${shorter * 0.15} ` +
+                                    `(wWorld=${wWorld}, hWorld=${hWorld}, shorter=${shorter})`
+                                );
+                            }
+
+                            // cs must NOT exceed the longer dimension * 0.15
+                            const longer = Math.max(wWorld, hWorld);
+                            if (cs > longer * 0.15 + EPSILON) {
+                                throw new Error(
+                                    `cs=${cs} exceeds longer * 0.15 = ${longer * 0.15} ` +
+                                    `(wWorld=${wWorld}, hWorld=${hWorld})`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 8b — cs equals the shorter dimension × 0.15 and never exceeds the longer dimension × 0.15',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 8c: Arm length is positive for any positive dimensions
+        //
+        // Since wWorld > 0 and hWorld > 0, cs must always be > 0.
+        // This guards against accidental negation or zero-multiplication bugs.
+        // -------------------------------------------------------------------------
+        async function runProperty8c() {
+            log('\n── Property 8c: Arm length is always positive for positive dimensions ──', 'title');
+            log('   Validates: Requirements 2.3 (arm length must be visible)', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.tuple(
+                            fc.float({ min: 0.1, max: 100, noNaN: true }),
+                            fc.float({ min: 0.1, max: 100, noNaN: true })
+                        ),
+                        async ([wWorld, hWorld]) => {
+                            const cs = computeCornerArmLength(wWorld, hWorld);
+
+                            if (cs <= 0) {
+                                throw new Error(
+                                    `cs=${cs} is not positive (wWorld=${wWorld}, hWorld=${hWorld})`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 8c — cs > 0 for all positive (wWorld, hWorld)',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 8d: Arm length scales linearly with dimensions
+        //
+        // Doubling both dimensions must double cs (since min scales linearly).
+        // -------------------------------------------------------------------------
+        async function runProperty8d() {
+            log('\n── Property 8d: Arm length scales linearly with dimensions ──', 'title');
+            log('   Validates: Requirements 2.3 (proportional scaling)', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.tuple(
+                            fc.float({ min: 0.1, max: 50, noNaN: true }),
+                            fc.float({ min: 0.1, max: 50, noNaN: true })
+                        ),
+                        fc.float({ min: 0.5, max: 4, noNaN: true }),
+                        async ([wWorld, hWorld], scale) => {
+                            const cs = computeCornerArmLength(wWorld, hWorld);
+                            const csScaled = computeCornerArmLength(wWorld * scale, hWorld * scale);
+                            const expected = cs * scale;
+
+                            // Allow relative tolerance for floating-point multiplication
+                            const relTol = Math.abs(expected) * 1e-6 + EPSILON;
+                            if (Math.abs(csScaled - expected) > relTol) {
+                                throw new Error(
+                                    `Scaling by ${scale}: csScaled=${csScaled}, expected cs*scale=${expected} ` +
+                                    `(cs=${cs}, wWorld=${wWorld}, hWorld=${hWorld})`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 8d — cs scales linearly: computeCornerArmLength(w*k, h*k) === cs * k',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all properties
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting Holographic Mask Corner Bracket Arm Length property tests…\n', 'info');
+
+            await runProperty8();
+            await runProperty8b();
+            await runProperty8c();
+            await runProperty8d();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<!--
+  Property Test: ParticleSystem Intrinsic Motion Magnitude Bounded
+  Feature: webcam-particle-face-ar, Property 10: Intrinsic Motion Magnitude Bounded
+
+  "For any particle position and a frame of intrinsic motion, the displacement of
+   each particle from its basePosition must satisfy:
+     |displacement| ≤ 0.01 * viewportWidth
+   before the lerp-back is applied.
+
+   Since lerp-back (factor 0.01) only moves the particle closer to basePosition,
+   the final displacement after a full applyIntrinsicMotion() call starting from
+   basePosition is also ≤ 0.01 * viewportWidth.
+
+   Test strategy: initialise each particle's current position equal to its
+   basePosition, call applyIntrinsicMotion() once, then verify that the
+   displacement from basePosition is ≤ noiseRadius = 0.01 * viewportWidth."
+
+  Validates: Requirements 5.4
+  "THE Particle_Cloud SHALL áp dụng chuyển động nội tại (intrinsic motion) cho
+   mỗi Particle với biên độ dao động tối đa 0.01 đơn vị mỗi Frame để tạo hiệu
+   ứng sống động."
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+  Results are printed to the on-screen log and the browser console.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Property Test — ParticleSystem Intrinsic Motion Magnitude</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Property Test — ParticleSystem Intrinsic Motion Magnitude Bounded</h1>
+    <h2>
+        Feature: webcam-particle-face-ar &nbsp;|&nbsp;
+        Property 10 &nbsp;|&nbsp;
+        Validates: Requirement 5.4
+    </h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- fast-check (same version as the rest of the project) -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <!-- Minimal THREE stubs — only the subset used by ParticleSystem is needed -->
+    <script>
+        const THREE = {
+            BufferAttribute: class BufferAttribute {
+                constructor(array, itemSize) {
+                    this.array = array;
+                    this.itemSize = itemSize;
+                    this.needsUpdate = false;
+                }
+            },
+
+            BufferGeometry: class BufferGeometry {
+                constructor() { this._attrs = {}; }
+                setAttribute(name, attr) { this._attrs[name] = attr; }
+                get attributes() { return this._attrs; }
+                dispose() { }
+            },
+
+            PointsMaterial: class PointsMaterial {
+                constructor(opts) { Object.assign(this, opts); }
+            },
+
+            Vector3: class Vector3 {
+                constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+                set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }
+                copy(v) { this.x = v.x; this.y = v.y; this.z = v.z; return this; }
+                lerp(v, t) {
+                    this.x += (v.x - this.x) * t;
+                    this.y += (v.y - this.y) * t;
+                    this.z += (v.z - this.z) * t;
+                    return this;
+                }
+            },
+        };
+
+        THREE.Points = class Points {
+            constructor(geometry, material) {
+                this.geometry = geometry;
+                this.material = material;
+                this.position = new THREE.Vector3();
+                this.scale = { setScalar(s) { } };
+            }
+        };
+    </script>
+
+    <!-- CONSTANTS (full set so ParticleSystem resolves every reference) -->
+    <script>
+        const CONSTANTS = {
+            DEPTH_SCALE: 50,
+            DEFAULT_PARTICLE_COUNT: 2000,
+            MIN_PARTICLES: 500,
+            MAX_PARTICLES: 5000,
+            LERP_POSITION: 0.1,
+            LERP_SCALE: 0.08,
+            LERP_BACK: 0.01,
+            JITTER_RADIUS_NORMALIZED: 0.02,
+            HAND_DIST_MIN: 0.05,
+            HAND_DIST_MAX: 0.8,
+            SCALE_MIN: 0.3,
+            SCALE_MAX: 3.0,
+            CAMERA_FOV: 75,
+            CAMERA_Z: 100,
+        };
+    </script>
+
+    <!-- Module under test -->
+    <script src="../../js/ParticleSystem.js"></script>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Minimal test harness (consistent with other property test files)
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Helpers
+        // -------------------------------------------------------------------------
+
+        /**
+         * Build a CoordinateMapper stub that returns a viewport based on the given
+         * viewportWidth.  ParticleSystem calls computeViewport() to derive noiseRadius.
+         *
+         * @param {number} viewportWidth  World-unit width of the viewport
+         */
+        function makeMapperStub(viewportWidth) {
+            return {
+                computeViewport() {
+                    return { width: viewportWidth, height: viewportWidth * (9 / 16) };
+                }
+            };
+        }
+
+        /**
+         * Build a minimal scene stub.
+         */
+        function makeSceneStub() {
+            return { add() { }, remove() { } };
+        }
+
+        /**
+         * Create, initialise, and return a ParticleSystem with the given count and
+         * viewport width.
+         *
+         * @param {number} count         Particle count (will be clamped by ParticleSystem)
+         * @param {number} viewportWidth World-unit viewport width
+         */
+        function makeParticleSystem(count, viewportWidth) {
+            const ps = new ParticleSystem(makeSceneStub(), makeMapperStub(viewportWidth), count);
+            ps.init();
+            return ps;
+        }
+
+        /**
+         * Euclidean distance between two {x,y,z} objects.
+         */
+        function dist3(ax, ay, az, bx, by, bz) {
+            const dx = ax - bx;
+            const dy = ay - by;
+            const dz = az - bz;
+            return Math.sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
+        /**
+         * Seed the current particle positions to equal their base positions so that
+         * the displacement measured after applyIntrinsicMotion() reflects only the
+         * noise added in that single call (plus the lerp-back reduction).
+         *
+         * Because lerp-back moves the particle *toward* basePosition, the final
+         * displacement is always ≤ the raw noise magnitude.  Starting from base
+         * therefore gives us the tightest possible bound to verify.
+         *
+         * @param {ParticleSystem} ps
+         */
+        function seedPositionsAtBase(ps) {
+            const positions = ps._geometry.attributes.position.array;
+            const base = ps._basePositions;
+            for (let i = 0; i < ps._count * 3; i++) {
+                positions[i] = base[i];
+            }
+            ps._geometry.attributes.position.needsUpdate = true;
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 10: Intrinsic Motion Magnitude Bounded
+        // Feature: webcam-particle-face-ar, Property 10: Intrinsic Motion Magnitude Bounded
+        // Validates: Requirements 5.4
+        // -------------------------------------------------------------------------
+
+        /**
+         * 10a — Core property: after one call to applyIntrinsicMotion() starting
+         *       from base positions, every particle's displacement from its
+         *       basePosition is ≤ noiseRadius = 0.01 * viewportWidth.
+         *
+         * Rationale: the noise vector is drawn from a sphere of radius noiseRadius,
+         * so |noise| ≤ noiseRadius.  The subsequent lerp-back (factor 0.01) only
+         * reduces the displacement, so the final displacement is also ≤ noiseRadius.
+         *
+         * Generator: random viewportWidth ∈ [50, 400] (covers realistic Three.js
+         * world-unit ranges) and random base positions for each particle.
+         */
+        async function runProperty10a() {
+            log('\n── Property 10a: displacement ≤ noiseRadius after one applyIntrinsicMotion() call ──', 'title');
+            log('   Validates: Requirement 5.4', 'info');
+            log('   Generator: fc.float({min:50,max:400}) for viewportWidth', 'info');
+            log('              fc.array(fc.float({noNaN:true}), {minLength:1500,maxLength:1500}) for base positions', 'info');
+            log('   Particle count: 500 (minimum), Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        // viewportWidth: realistic range for Three.js world units
+                        fc.float({ min: 50, max: 400, noNaN: true }),
+                        // base positions for 500 particles (500 * 3 = 1500 floats)
+                        fc.array(
+                            fc.float({ min: -200, max: 200, noNaN: true }),
+                            { minLength: 1500, maxLength: 1500 }
+                        ),
+                        async (viewportWidth, basePosData) => {
+                            const COUNT = 500; // MIN_PARTICLES — keeps test fast
+                            const ps = makeParticleSystem(COUNT, viewportWidth);
+
+                            // Set base positions to the generated values
+                            for (let i = 0; i < COUNT * 3; i++) {
+                                ps._basePositions[i] = basePosData[i];
+                            }
+
+                            // Seed current positions equal to base positions
+                            seedPositionsAtBase(ps);
+
+                            // Apply one frame of intrinsic motion
+                            ps.applyIntrinsicMotion();
+
+                            // noiseRadius used by applyIntrinsicMotion()
+                            const noiseRadius = 0.01 * viewportWidth;
+
+                            // Verify every particle's displacement from its base position
+                            const positions = ps._geometry.attributes.position.array;
+                            const base = ps._basePositions;
+
+                            for (let i = 0; i < COUNT; i++) {
+                                const ix = i * 3;
+                                const d = dist3(
+                                    positions[ix], positions[ix + 1], positions[ix + 2],
+                                    base[ix], base[ix + 1], base[ix + 2]
+                                );
+
+                                if (d > noiseRadius + 1e-9) {
+                                    throw new Error(
+                                        `Particle ${i}: displacement ${d.toExponential(4)} ` +
+                                        `> noiseRadius ${noiseRadius.toExponential(4)} ` +
+                                        `(viewportWidth=${viewportWidth.toFixed(2)})\n` +
+                                        `  base=(${base[ix].toFixed(3)}, ${base[ix + 1].toFixed(3)}, ${base[ix + 2].toFixed(3)})\n` +
+                                        `  pos =(${positions[ix].toFixed(3)}, ${positions[ix + 1].toFixed(3)}, ${positions[ix + 2].toFixed(3)})`
+                                    );
+                                }
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 10a — displacement ≤ 0.01 * viewportWidth after applyIntrinsicMotion() from base',
+                passed,
+                failDetail
+            );
+        }
+
+        /**
+         * 10b — Noise radius scales with viewportWidth: a larger viewport produces
+         *       a proportionally larger maximum displacement.
+         *
+         * Strategy: run applyIntrinsicMotion() many times on two systems with
+         * different viewportWidths (ratio 2:1) and verify that the maximum observed
+         * displacement in the wider system is ≤ 2× the noiseRadius of the narrower
+         * system.  This confirms the 0.01 * viewportWidth formula is respected.
+         */
+        async function runProperty10b() {
+            log('\n── Property 10b: noiseRadius scales linearly with viewportWidth ──', 'title');
+            log('   Validates: Requirement 5.4', 'info');
+            log('   Strategy: compare max displacement across two viewport widths', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.float({ min: 50, max: 200, noNaN: true }), // base viewportWidth
+                        async (baseWidth) => {
+                            const COUNT = 500;
+                            const wideWidth = baseWidth * 2;
+
+                            const psNarrow = makeParticleSystem(COUNT, baseWidth);
+                            const psWide = makeParticleSystem(COUNT, wideWidth);
+
+                            // Seed both at base positions (all zeros from _allocate)
+                            seedPositionsAtBase(psNarrow);
+                            seedPositionsAtBase(psWide);
+
+                            // Apply intrinsic motion
+                            psNarrow.applyIntrinsicMotion();
+                            psWide.applyIntrinsicMotion();
+
+                            const noiseRadiusNarrow = 0.01 * baseWidth;
+                            const noiseRadiusWide = 0.01 * wideWidth; // = 2 * noiseRadiusNarrow
+
+                            // Verify each system stays within its own noiseRadius
+                            for (const [ps, noiseRadius, label] of [
+                                [psNarrow, noiseRadiusNarrow, 'narrow'],
+                                [psWide, noiseRadiusWide, 'wide'],
+                            ]) {
+                                const positions = ps._geometry.attributes.position.array;
+                                const base = ps._basePositions;
+                                for (let i = 0; i < COUNT; i++) {
+                                    const ix = i * 3;
+                                    const d = dist3(
+                                        positions[ix], positions[ix + 1], positions[ix + 2],
+                                        base[ix], base[ix + 1], base[ix + 2]
+                                    );
+                                    if (d > noiseRadius + 1e-9) {
+                                        throw new Error(
+                                            `[${label}] Particle ${i}: displacement ${d.toExponential(4)} ` +
+                                            `> noiseRadius ${noiseRadius.toExponential(4)} ` +
+                                            `(viewportWidth=${ps._coordinateMapper.computeViewport().width.toFixed(2)})`
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 10b — noiseRadius = 0.01 * viewportWidth scales correctly with viewport',
+                passed,
+                failDetail
+            );
+        }
+
+        /**
+         * 10c — Repeated calls: after N frames of intrinsic motion, the displacement
+         *       from the original base position remains bounded.
+         *
+         * Because lerp-back (factor 0.01) pulls the particle back toward base each
+         * frame, the system is stable: the displacement converges to a steady-state
+         * value ≤ noiseRadius / (1 - 0.99) = noiseRadius / 0.01 = 100 * noiseRadius
+         * in the worst case.  However, in practice the bound is much tighter.
+         *
+         * For this test we verify the weaker but practically important bound:
+         * after 10 frames, displacement ≤ 10 * noiseRadius (very conservative).
+         *
+         * This ensures the system does not diverge.
+         */
+        async function runProperty10c() {
+            log('\n── Property 10c: displacement stays bounded after multiple frames ──', 'title');
+            log('   Validates: Requirement 5.4', 'info');
+            log('   Strategy: 10 frames of applyIntrinsicMotion(), bound ≤ 10 * noiseRadius', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.float({ min: 50, max: 400, noNaN: true }),
+                        async (viewportWidth) => {
+                            const COUNT = 500;
+                            const FRAMES = 10;
+                            const ps = makeParticleSystem(COUNT, viewportWidth);
+
+                            // Seed at base positions
+                            seedPositionsAtBase(ps);
+
+                            // Run multiple frames
+                            for (let f = 0; f < FRAMES; f++) {
+                                ps.applyIntrinsicMotion();
+                            }
+
+                            const noiseRadius = 0.01 * viewportWidth;
+                            // Conservative bound: after N frames the displacement
+                            // cannot exceed N * noiseRadius (triangle inequality)
+                            const bound = FRAMES * noiseRadius;
+
+                            const positions = ps._geometry.attributes.position.array;
+                            const base = ps._basePositions;
+
+                            for (let i = 0; i < COUNT; i++) {
+                                const ix = i * 3;
+                                const d = dist3(
+                                    positions[ix], positions[ix + 1], positions[ix + 2],
+                                    base[ix], base[ix + 1], base[ix + 2]
+                                );
+                                if (d > bound + 1e-9) {
+                                    throw new Error(
+                                        `Particle ${i} after ${FRAMES} frames: displacement ${d.toExponential(4)} ` +
+                                        `> bound ${bound.toExponential(4)} ` +
+                                        `(noiseRadius=${noiseRadius.toExponential(4)}, viewportWidth=${viewportWidth.toFixed(2)})`
+                                    );
+                                }
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 10c — displacement bounded after 10 frames (≤ 10 * noiseRadius)',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Edge-case tests (example-based, complement the PBT properties)
+        // -------------------------------------------------------------------------
+        async function runEdgeCases() {
+            log('\n── Edge Cases (complement to Property 10) ──', 'title');
+
+            // Standard viewport: FOV=75°, cameraZ=100, aspect 16:9
+            // height = 2 * tan(37.5° * π/180) * 100 ≈ 153.1
+            // width  = height * (16/9)              ≈ 272.2
+            const VIEWPORT_WIDTH = 272.2;
+            const noiseRadius = 0.01 * VIEWPORT_WIDTH; // ≈ 2.722
+
+            // Case 1: single call from base — displacement ≤ noiseRadius
+            {
+                const COUNT = 500;
+                const ps = makeParticleSystem(COUNT, VIEWPORT_WIDTH);
+                seedPositionsAtBase(ps);
+                ps.applyIntrinsicMotion();
+
+                const positions = ps._geometry.attributes.position.array;
+                const base = ps._basePositions;
+                let maxDisp = 0;
+                let allOk = true;
+
+                for (let i = 0; i < COUNT; i++) {
+                    const ix = i * 3;
+                    const d = dist3(
+                        positions[ix], positions[ix + 1], positions[ix + 2],
+                        base[ix], base[ix + 1], base[ix + 2]
+                    );
+                    if (d > maxDisp) maxDisp = d;
+                    if (d > noiseRadius + 1e-9) { allOk = false; break; }
+                }
+
+                recordResult(
+                    `Edge: single call from base — max displacement ${maxDisp.toFixed(4)} ≤ noiseRadius ${noiseRadius.toFixed(4)}`,
+                    allOk,
+                    allOk ? '' : `Displacement exceeded noiseRadius (${noiseRadius.toFixed(4)})`
+                );
+            }
+
+            // Case 2: 100 frames — system remains stable (displacement ≤ 2 * noiseRadius
+            //         due to lerp-back keeping the cloud near base)
+            {
+                const COUNT = 500;
+                const FRAMES = 100;
+                const ps = makeParticleSystem(COUNT, VIEWPORT_WIDTH);
+                seedPositionsAtBase(ps);
+
+                for (let f = 0; f < FRAMES; f++) {
+                    ps.applyIntrinsicMotion();
+                }
+
+                const positions = ps._geometry.attributes.position.array;
+                const base = ps._basePositions;
+                // Steady-state bound: noise / lerpBack = noiseRadius / 0.01 = 100 * noiseRadius
+                // In practice much tighter; use 5 * noiseRadius as a practical bound
+                const practicalBound = 5 * noiseRadius;
+                let allOk = true;
+                let maxDisp = 0;
+
+                for (let i = 0; i < COUNT; i++) {
+                    const ix = i * 3;
+                    const d = dist3(
+                        positions[ix], positions[ix + 1], positions[ix + 2],
+                        base[ix], base[ix + 1], base[ix + 2]
+                    );
+                    if (d > maxDisp) maxDisp = d;
+                    if (d > practicalBound + 1e-9) { allOk = false; break; }
+                }
+
+                recordResult(
+                    `Edge: 100 frames — max displacement ${maxDisp.toFixed(4)} ≤ 5 * noiseRadius ${(5 * noiseRadius).toFixed(4)}`,
+                    allOk,
+                    allOk ? '' : `Displacement exceeded 5 * noiseRadius after 100 frames`
+                );
+            }
+
+            // Case 3: minimum particle count (500) — all particles bounded
+            {
+                const ps = makeParticleSystem(500, VIEWPORT_WIDTH);
+                seedPositionsAtBase(ps);
+                ps.applyIntrinsicMotion();
+
+                const positions = ps._geometry.attributes.position.array;
+                const base = ps._basePositions;
+                let allOk = true;
+
+                for (let i = 0; i < 500; i++) {
+                    const ix = i * 3;
+                    const d = dist3(
+                        positions[ix], positions[ix + 1], positions[ix + 2],
+                        base[ix], base[ix + 1], base[ix + 2]
+                    );
+                    if (d > noiseRadius + 1e-9) { allOk = false; break; }
+                }
+
+                recordResult(
+                    'Edge: minimum particle count (500) — all displacements bounded',
+                    allOk,
+                    allOk ? '' : 'At least one particle exceeded noiseRadius'
+                );
+            }
+
+            // Case 4: noiseRadius formula — verify 0.01 * viewportWidth constant
+            {
+                const testWidths = [50, 100, 200, 272.2, 400];
+                let allOk = true;
+                let failMsg = '';
+
+                for (const w of testWidths) {
+                    const ps = makeParticleSystem(500, w);
+                    seedPositionsAtBase(ps);
+                    ps.applyIntrinsicMotion();
+
+                    const expectedRadius = 0.01 * w;
+                    const positions = ps._geometry.attributes.position.array;
+                    const base = ps._basePositions;
+
+                    for (let i = 0; i < 500; i++) {
+                        const ix = i * 3;
+                        const d = dist3(
+                            positions[ix], positions[ix + 1], positions[ix + 2],
+                            base[ix], base[ix + 1], base[ix + 2]
+                        );
+                        if (d > expectedRadius + 1e-9) {
+                            allOk = false;
+                            failMsg = `viewportWidth=${w}: particle ${i} displacement ${d.toFixed(4)} > ${expectedRadius.toFixed(4)}`;
+                            break;
+                        }
+                    }
+                    if (!allOk) break;
+                }
+
+                recordResult(
+                    'Edge: noiseRadius = 0.01 * viewportWidth verified across multiple viewport widths',
+                    allOk,
+                    failMsg
+                );
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all tests
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting ParticleSystem intrinsic motion magnitude property tests…\n', 'info');
+
+            await runProperty10a();
+            await runProperty10b();
+            await runProperty10c();
+            await runEdgeCases();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

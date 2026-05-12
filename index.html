@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Webcam Particle Face AR</title>
+  <link rel="stylesheet" href="css/style.css" />
+
+  <!-- Inline security checks — run before anything else -->
+  <script>
+    // HTTPS / localhost check
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+      document.addEventListener('DOMContentLoaded', function () {
+        document.getElementById('error-message').textContent = 'Ứng dụng yêu cầu kết nối HTTPS để truy cập camera. Vui lòng mở qua HTTPS hoặc localhost.';
+        document.getElementById('error-overlay').style.display = 'flex';
+      });
+    }
+    // WebGL 2.0 check
+    const testCanvas = document.createElement('canvas');
+    if (!testCanvas.getContext('webgl2')) {
+      document.addEventListener('DOMContentLoaded', function () {
+        document.getElementById('error-message').textContent = 'Trình duyệt của bạn không hỗ trợ WebGL 2.0. Vui lòng cập nhật Chrome lên phiên bản 90 trở lên.';
+        document.getElementById('error-overlay').style.display = 'flex';
+      });
+    }
+  </script>
+
+  <!-- CDN: Three.js r158 -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
+
+  <!-- CDN: MediaPipe FaceMesh 0.4 -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
+
+  <!-- CDN: MediaPipe Hands 0.4 -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js" crossorigin="anonymous"></script>
+
+  <!-- CDN: MediaPipe Camera Utils 0.3 -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js"
+    crossorigin="anonymous"></script>
+
+  <!-- CDN: fast-check (property-based testing) -->
+  <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+</head>
+
+<body>
+
+  <!-- App container: stacks video + canvas + HUD in correct z-order -->
+  <div id="app-container">
+
+    <!-- Video element: displays webcam feed at the bottom layer -->
+    <video id="video" autoplay playsinline muted></video>
+
+    <!-- Hidden video element for MediaPipe input (avoids mirror-mode conflict) -->
+    <video id="video-mediapipe" autoplay playsinline muted style="display:none;"></video>
+
+    <!-- Three.js rendering canvas: transparent overlay above video -->
+    <canvas id="canvas"></canvas>
+
+    <!-- HUD overlay: 4 corner elements + tracking status -->
+    <div id="hud-overlay" aria-live="polite" aria-label="AR HUD thông tin trạng thái">
+      <div id="fps" aria-label="FPS hiện tại">FPS: --</div>
+      <div id="landmark-count" aria-label="Số điểm khuôn mặt">Landmarks: 0</div>
+      <div id="tracking-status" aria-label="Trạng thái theo dõi">SEARCHING</div>
+      <div id="hand-count" aria-label="Số bàn tay">Hands: 0</div>
+      <div id="particle-count" aria-label="Số hạt">Particles: 0</div>
+    </div>
+
+    <!-- Neon frame (cyan border around screen) -->
+    <div id="neon-frame" aria-hidden="true"></div>
+
+    <!-- Face bounding box (kept in DOM but hidden — see CSS) -->
+    <div id="face-bbox" aria-hidden="true"></div>
+
+    <!-- Hand region box removed — replaced by Three.js Plane + LineSegments in WebGL scene -->
+
+  </div>
+
+  <!-- Loading screen overlay with progress bar -->
+  <div id="loading-overlay" role="status" aria-label="Đang tải ứng dụng">
+    <div id="loading-content">
+      <h2 id="loading-title">Webcam Particle Face AR</h2>
+      <p id="loading-message">Đang tải MediaPipe...</p>
+      <div id="loading-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="loading-fill"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Error overlay with message and retry button -->
+  <div id="error-overlay" role="alert" aria-live="assertive">
+    <div id="error-content">
+      <h2 id="error-title">⚠ Lỗi</h2>
+      <p id="error-message">Đã xảy ra lỗi.</p>
+      <button id="retry-btn" class="btn" style="display:none;" aria-label="Thử lại">Thử lại</button>
+    </div>
+  </div>
+
+  <!-- UI controls panel -->
+  <div id="controls" role="region" aria-label="Điều khiển ứng dụng">
+    <button id="start-stop-btn" class="btn" aria-label="Bắt đầu hoặc dừng theo dõi">Start</button>
+
+    <div class="control-group">
+      <label for="particle-slider">Particles: <span id="particle-slider-value">2000</span></label>
+      <input type="range" id="particle-slider" min="500" max="5000" step="100" value="2000"
+        aria-label="Số lượng hạt từ 500 đến 5000" />
+    </div>
+
+    <button id="reset-btn" class="btn" aria-label="Đặt lại đám mây hạt">Reset</button>
+
+    <div class="control-group toggle-group">
+      <label for="intensity-toggle">Intensity Mode</label>
+      <input type="checkbox" id="intensity-toggle" role="switch" aria-label="Bật tắt chế độ tăng độ sáng" />
+    </div>
+
+    <div class="control-group toggle-group">
+      <label for="mirror-toggle">Mirror Mode</label>
+      <input type="checkbox" id="mirror-toggle" role="switch" aria-label="Bật tắt chế độ gương" />
+    </div>
+  </div>
+
+  <!-- Privacy notice overlay (shown only once, tracked via localStorage) -->
+  <div id="privacy-notice" role="dialog" aria-modal="true" aria-labelledby="privacy-title"
+    aria-describedby="privacy-body">
+    <div id="privacy-content">
+      <h2 id="privacy-title">🔒 Thông báo quyền riêng tư</h2>
+      <p id="privacy-body">
+        Ứng dụng này sử dụng webcam của bạn để nhận diện khuôn mặt và bàn tay theo thời gian thực.
+        <strong>Toàn bộ xử lý diễn ra cục bộ trong trình duyệt</strong> — không có dữ liệu nào được gửi ra ngoài.
+        Ứng dụng không lưu trữ hình ảnh hay video của bạn.
+      </p>
+      <button id="privacy-dismiss" class="btn" aria-label="Đồng ý và tiếp tục">Đồng ý &amp; Tiếp tục</button>
+    </div>
+  </div>
+
+  <!-- JS modules — loaded in dependency order -->
+  <script src="js/constants.js"></script>
+  <script src="js/StateManager.js"></script>
+  <script src="js/CoordinateMapper.js"></script>
+  <script src="js/SceneRenderer.js"></script>
+  <script src="js/ParticleSystem.js"></script>
+  <script src="js/AdaptiveQualityManager.js"></script>
+  <script src="js/MediaPipeEngine.js"></script>
+  <script src="js/HUDOverlay.js"></script>
+  <script src="js/AppController.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/main.js"></script>
+
+</body>
+
+</html>

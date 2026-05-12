@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<!--
+  Smoke Test: localStorage Availability and StateManager Resilience
+  Feature: webcam-particle-face-ar
+  Task 13.3
+
+  Verifies that StateManager works correctly when localStorage is available,
+  and degrades gracefully when localStorage is blocked (e.g. private/incognito
+  mode with strict settings, or storage quota exceeded).
+
+  Validates: Requirement 11.6
+  "THE System SHALL lưu trạng thái các tùy chọn người dùng vào localStorage
+   và khôi phục khi tải lại trang."
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smoke Test — localStorage Availability</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Smoke Test — localStorage Availability</h1>
+    <h2>Feature: webcam-particle-face-ar &nbsp;|&nbsp; Task 13.3 &nbsp;|&nbsp; Validates: Requirement 11.6</h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- fast-check for property-based testing -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <!-- CONSTANTS stub -->
+    <script>
+        const CONSTANTS = {
+            MIN_PARTICLES: 500,
+            MAX_PARTICLES: 5000,
+            DEFAULT_PARTICLE_COUNT: 2000,
+        };
+    </script>
+
+    <!-- Module under test -->
+    <script src="../../js/StateManager.js"></script>
+
+    <script>
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // Isolated key for tests — avoids polluting real app state
+        const TEST_KEY = 'smoke-localstorage-test';
+
+        /**
+         * Run fn with StateManager.STORAGE_KEY temporarily set to TEST_KEY.
+         * Cleans up the key before and after.
+         */
+        function withIsolatedKey(fn) {
+            const original = StateManager.STORAGE_KEY;
+            StateManager.STORAGE_KEY = TEST_KEY;
+            localStorage.removeItem(TEST_KEY);
+            try {
+                return fn();
+            } finally {
+                StateManager.STORAGE_KEY = original;
+                localStorage.removeItem(TEST_KEY);
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Test 1: localStorage is available in current browser
+        // -------------------------------------------------------------------------
+        function testLocalStorageAvailable() {
+            log('\n── Test 1: localStorage is available ──', 'title');
+
+            let available = false;
+            try {
+                localStorage.setItem('__test__', '1');
+                available = localStorage.getItem('__test__') === '1';
+                localStorage.removeItem('__test__');
+            } catch (e) {
+                available = false;
+            }
+
+            recordResult(
+                'localStorage is available in current browser',
+                available,
+                'localStorage is required for state persistence (Req 11.6)'
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Test 2: StateManager works normally when localStorage is available
+        // -------------------------------------------------------------------------
+        function testStateManagerNormal() {
+            log('\n── Test 2: StateManager works normally with localStorage ──', 'title');
+
+            withIsolatedKey(() => {
+                const sm = new StateManager();
+
+                // Set values via public setters
+                sm.particleCount = 3000;
+                sm.intensityMode = true;
+                sm.mirrorMode = true;
+                sm.isRunning = false;
+
+                // Create a fresh instance — should load from localStorage
+                const sm2 = new StateManager();
+
+                recordResult(
+                    'particleCount persists across StateManager instances',
+                    sm2.particleCount === 3000,
+                    `Expected 3000, got ${sm2.particleCount}`
+                );
+                recordResult(
+                    'intensityMode persists across StateManager instances',
+                    sm2.intensityMode === true,
+                    `Expected true, got ${sm2.intensityMode}`
+                );
+                recordResult(
+                    'mirrorMode persists across StateManager instances',
+                    sm2.mirrorMode === true,
+                    `Expected true, got ${sm2.mirrorMode}`
+                );
+                recordResult(
+                    'isRunning persists across StateManager instances',
+                    sm2.isRunning === false,
+                    `Expected false, got ${sm2.isRunning}`
+                );
+            });
+        }
+
+        // -------------------------------------------------------------------------
+        // Test 3: StateManager falls back to defaults when localStorage is blocked
+        // -------------------------------------------------------------------------
+        function testStateManagerWithBlockedStorage() {
+            log('\n── Test 3: StateManager falls back to defaults when localStorage throws ──', 'title');
+
+            // Simulate blocked localStorage by temporarily replacing it with a throwing stub
+            const originalGetItem = localStorage.getItem.bind(localStorage);
+            const originalSetItem = localStorage.setItem.bind(localStorage);
+
+            let throwOnAccess = false;
+            const patchedGetItem = function (key) {
+                if (throwOnAccess && key === TEST_KEY) {
+                    throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+                }
+                return originalGetItem(key);
+            };
+            const patchedSetItem = function (key, value) {
+                if (throwOnAccess && key === TEST_KEY) {
+                    throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+                }
+                return originalSetItem(key, value);
+            };
+
+            try {
+                throwOnAccess = true;
+                Object.defineProperty(Storage.prototype, 'getItem', {
+                    value: patchedGetItem, configurable: true, writable: true
+                });
+                Object.defineProperty(Storage.prototype, 'setItem', {
+                    value: patchedSetItem, configurable: true, writable: true
+                });
+
+                const original = StateManager.STORAGE_KEY;
+                StateManager.STORAGE_KEY = TEST_KEY;
+                const sm = new StateManager();
+                StateManager.STORAGE_KEY = original;
+
+                // Restore
+                Object.defineProperty(Storage.prototype, 'getItem', {
+                    value: originalGetItem, configurable: true, writable: true
+                });
+                Object.defineProperty(Storage.prototype, 'setItem', {
+                    value: originalSetItem, configurable: true, writable: true
+                });
+                throwOnAccess = false;
+                localStorage.removeItem(TEST_KEY);
+
+                // StateManager should have fallen back to defaults
+                recordResult(
+                    'StateManager falls back to defaults when localStorage.getItem throws',
+                    sm.particleCount === 2000 &&
+                    sm.intensityMode === false &&
+                    sm.mirrorMode === false &&
+                    sm.isRunning === true,
+                    `Got: particleCount=${sm.particleCount}, intensityMode=${sm.intensityMode}, ` +
+                    `mirrorMode=${sm.mirrorMode}, isRunning=${sm.isRunning}`
+                );
+            } catch (patchErr) {
+                // If patching fails (browser security), fall back to corrupted-data test
+                Object.defineProperty(Storage.prototype, 'getItem', {
+                    value: originalGetItem, configurable: true, writable: true
+                });
+                Object.defineProperty(Storage.prototype, 'setItem', {
+                    value: originalSetItem, configurable: true, writable: true
+                });
+                throwOnAccess = false;
+                localStorage.removeItem(TEST_KEY);
+
+                log('  ⚠ SKIP  Cannot patch localStorage in this environment — testing via corrupted data instead', 'warn');
+
+                withIsolatedKey(() => {
+                    localStorage.setItem(TEST_KEY, '{ invalid json !!!');
+                    const sm = new StateManager();
+                    recordResult(
+                        'StateManager falls back to defaults when localStorage contains corrupted data',
+                        sm.particleCount === 2000 &&
+                        sm.intensityMode === false &&
+                        sm.mirrorMode === false &&
+                        sm.isRunning === true,
+                        `Got: particleCount=${sm.particleCount}, intensityMode=${sm.intensityMode}, ` +
+                        `mirrorMode=${sm.mirrorMode}, isRunning=${sm.isRunning}`
+                    );
+                });
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Test 4: save() does not throw when localStorage is unavailable
+        // -------------------------------------------------------------------------
+        function testSaveDoesNotThrow() {
+            log('\n── Test 4: save() does not throw when localStorage is unavailable ──', 'title');
+
+            const originalSetItem = localStorage.setItem.bind(localStorage);
+            let didThrow = false;
+
+            try {
+                Object.defineProperty(Storage.prototype, 'setItem', {
+                    value: function (key, value) {
+                        throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+                    },
+                    configurable: true, writable: true
+                });
+
+                const original = StateManager.STORAGE_KEY;
+                StateManager.STORAGE_KEY = TEST_KEY;
+
+                try {
+                    const sm = new StateManager();
+                    sm.particleCount = 1500; // triggers save()
+                } catch (e) {
+                    didThrow = true;
+                } finally {
+                    StateManager.STORAGE_KEY = original;
+                }
+            } finally {
+                Object.defineProperty(Storage.prototype, 'setItem', {
+                    value: originalSetItem, configurable: true, writable: true
+                });
+                localStorage.removeItem(TEST_KEY);
+            }
+
+            recordResult(
+                'save() does not throw when localStorage.setItem throws (graceful degradation)',
+                !didThrow,
+                'save() should catch and log the error, not propagate it'
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Test 5: Default values are correct
+        // -------------------------------------------------------------------------
+        function testDefaultValues() {
+            log('\n── Test 5: Default values are correct ──', 'title');
+
+            withIsolatedKey(() => {
+                const sm = new StateManager();
+
+                recordResult(
+                    'Default particleCount is 2000',
+                    sm.particleCount === 2000,
+                    `Got ${sm.particleCount}`
+                );
+                recordResult(
+                    'Default intensityMode is false',
+                    sm.intensityMode === false,
+                    `Got ${sm.intensityMode}`
+                );
+                recordResult(
+                    'Default mirrorMode is false',
+                    sm.mirrorMode === false,
+                    `Got ${sm.mirrorMode}`
+                );
+                recordResult(
+                    'Default isRunning is true',
+                    sm.isRunning === true,
+                    `Got ${sm.isRunning}`
+                );
+            });
+        }
+
+        // -------------------------------------------------------------------------
+        // Property Test A: StateManager save/load round-trip with localStorage available
+        // Feature: webcam-particle-face-ar, Property A: StateManager Round-Trip When localStorage Available
+        // Validates: Requirements 11.6
+        // -------------------------------------------------------------------------
+        async function runPropertyTestAvailable() {
+            log('\n── Property Test A: save/load round-trip when localStorage available (100 iterations) ──', 'title');
+            log('   Feature: webcam-particle-face-ar, Property A: StateManager Round-Trip When localStorage Available', 'info');
+            log('   Validates: Requirements 11.6\n', 'info');
+
+            const PBT_KEY = 'smoke-localstorage-pbt-available';
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.record({
+                            particleCount: fc.integer({ min: 500, max: 5000 }),
+                            intensityMode: fc.boolean(),
+                            mirrorMode: fc.boolean(),
+                            isRunning: fc.boolean(),
+                        }),
+                        async (state) => {
+                            const original = StateManager.STORAGE_KEY;
+                            StateManager.STORAGE_KEY = PBT_KEY;
+                            localStorage.removeItem(PBT_KEY);
+
+                            // Write state via setters (each setter calls save())
+                            const sm = new StateManager();
+                            sm._particleCount = state.particleCount;
+                            sm._intensityMode = state.intensityMode;
+                            sm._mirrorMode = state.mirrorMode;
+                            sm._isRunning = state.isRunning;
+                            sm.save();
+
+                            // Load fresh instance — reads from same isolated key
+                            const sm2 = new StateManager();
+                            StateManager.STORAGE_KEY = original;
+                            localStorage.removeItem(PBT_KEY);
+
+                            const ok =
+                                sm2._particleCount === state.particleCount &&
+                                sm2._intensityMode === state.intensityMode &&
+                                sm2._mirrorMode === state.mirrorMode &&
+                                sm2._isRunning === state.isRunning;
+
+                            if (!ok) {
+                                throw new Error(
+                                    `Round-trip mismatch.\n` +
+                                    `  Input:  ${JSON.stringify(state)}\n` +
+                                    `  Loaded: particleCount=${sm2._particleCount}, ` +
+                                    `intensityMode=${sm2._intensityMode}, ` +
+                                    `mirrorMode=${sm2._mirrorMode}, ` +
+                                    `isRunning=${sm2._isRunning}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 100, verbose: false }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            } finally {
+                localStorage.removeItem(PBT_KEY);
+            }
+
+            recordResult(
+                'Property A — save() then load() returns identical AppState (100 runs)',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property Test B: StateManager always returns valid defaults when localStorage blocked
+        // Feature: webcam-particle-face-ar, Property B: StateManager Defaults When localStorage Blocked
+        // Validates: Requirements 11.6
+        // -------------------------------------------------------------------------
+        async function runPropertyTestBlocked() {
+            log('\n── Property Test B: defaults returned when localStorage blocked (100 iterations) ──', 'title');
+            log('   Feature: webcam-particle-face-ar, Property B: StateManager Defaults When localStorage Blocked', 'info');
+            log('   Validates: Requirements 11.6\n', 'info');
+
+            const PBT_KEY = 'smoke-localstorage-pbt-blocked';
+
+            // Generate arbitrary corrupted/invalid JSON strings to simulate blocked/corrupt storage
+            const corruptedArb = fc.oneof(
+                fc.constant(''),
+                fc.constant('null'),
+                fc.constant('undefined'),
+                fc.constant('{ invalid json !!!'),
+                fc.constant('[]'),
+                fc.constant('true'),
+                fc.constant('42'),
+                // Partial/wrong-typed fields
+                fc.record({
+                    particleCount: fc.oneof(fc.constant(null), fc.constant('not-a-number'), fc.constant(NaN), fc.constant(Infinity)),
+                    intensityMode: fc.oneof(fc.constant(null), fc.constant('yes'), fc.constant(1)),
+                    mirrorMode: fc.oneof(fc.constant(null), fc.constant('no'), fc.constant(0)),
+                    isRunning: fc.oneof(fc.constant(null), fc.constant('true'), fc.constant(1)),
+                }).map(obj => JSON.stringify(obj))
+            );
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        corruptedArb,
+                        async (corruptedData) => {
+                            const original = StateManager.STORAGE_KEY;
+                            StateManager.STORAGE_KEY = PBT_KEY;
+
+                            // Plant corrupted/invalid data in storage
+                            try {
+                                localStorage.setItem(PBT_KEY, corruptedData);
+                            } catch (_) {
+                                // If setItem itself fails, skip this iteration
+                                StateManager.STORAGE_KEY = original;
+                                return;
+                            }
+
+                            const sm = new StateManager();
+                            StateManager.STORAGE_KEY = original;
+                            localStorage.removeItem(PBT_KEY);
+
+                            // particleCount must be a valid number in [500, 5000]
+                            const pcOk = typeof sm._particleCount === 'number' &&
+                                isFinite(sm._particleCount) &&
+                                sm._particleCount >= 500 &&
+                                sm._particleCount <= 5000;
+
+                            // Boolean fields must be actual booleans
+                            const boolsOk =
+                                typeof sm._intensityMode === 'boolean' &&
+                                typeof sm._mirrorMode === 'boolean' &&
+                                typeof sm._isRunning === 'boolean';
+
+                            if (!pcOk || !boolsOk) {
+                                throw new Error(
+                                    `StateManager produced invalid state from corrupted data.\n` +
+                                    `  Input data: ${corruptedData}\n` +
+                                    `  Got: particleCount=${sm._particleCount} (${typeof sm._particleCount}), ` +
+                                    `intensityMode=${sm._intensityMode} (${typeof sm._intensityMode}), ` +
+                                    `mirrorMode=${sm._mirrorMode} (${typeof sm._mirrorMode}), ` +
+                                    `isRunning=${sm._isRunning} (${typeof sm._isRunning})`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 100, verbose: false }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            } finally {
+                localStorage.removeItem(PBT_KEY);
+            }
+
+            recordResult(
+                'Property B — StateManager always produces valid state from corrupted/invalid localStorage data (100 runs)',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property Test C: particleCount is always clamped to [500, 5000] after load
+        // Feature: webcam-particle-face-ar, Property C: particleCount Clamped After Load
+        // Validates: Requirements 11.6
+        // -------------------------------------------------------------------------
+        async function runPropertyTestClamp() {
+            log('\n── Property Test C: particleCount always clamped to [500, 5000] after load (100 iterations) ──', 'title');
+            log('   Feature: webcam-particle-face-ar, Property C: particleCount Clamped After Load', 'info');
+            log('   Validates: Requirements 11.6\n', 'info');
+
+            const PBT_KEY = 'smoke-localstorage-pbt-clamp';
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        // Generate arbitrary numeric values including out-of-range ones
+                        fc.oneof(
+                            fc.integer({ min: -10000, max: 10000 }),
+                            fc.constant(0),
+                            fc.constant(499),
+                            fc.constant(500),
+                            fc.constant(5000),
+                            fc.constant(5001),
+                            fc.constant(Number.MAX_SAFE_INTEGER),
+                            fc.constant(Number.MIN_SAFE_INTEGER)
+                        ),
+                        async (rawCount) => {
+                            const original = StateManager.STORAGE_KEY;
+                            StateManager.STORAGE_KEY = PBT_KEY;
+
+                            localStorage.setItem(PBT_KEY, JSON.stringify({
+                                particleCount: rawCount,
+                                intensityMode: false,
+                                mirrorMode: false,
+                                isRunning: true,
+                            }));
+
+                            const sm = new StateManager();
+                            StateManager.STORAGE_KEY = original;
+                            localStorage.removeItem(PBT_KEY);
+
+                            const clamped = sm._particleCount;
+                            const ok = typeof clamped === 'number' &&
+                                isFinite(clamped) &&
+                                clamped >= 500 &&
+                                clamped <= 5000;
+
+                            if (!ok) {
+                                throw new Error(
+                                    `particleCount not clamped correctly.\n` +
+                                    `  Raw input: ${rawCount}\n` +
+                                    `  Got: ${clamped} (expected value in [500, 5000])`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 100, verbose: false }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            } finally {
+                localStorage.removeItem(PBT_KEY);
+            }
+
+            recordResult(
+                'Property C — particleCount always clamped to [500, 5000] regardless of stored value (100 runs)',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all tests
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting localStorage availability smoke tests…\n', 'info');
+
+            // Example-based smoke tests
+            testLocalStorageAvailable();
+            testStateManagerNormal();
+            testStateManagerWithBlockedStorage();
+            testSaveDoesNotThrow();
+            testDefaultValues();
+
+            // Property-based tests
+            await runPropertyTestAvailable();
+            await runPropertyTestBlocked();
+            await runPropertyTestClamp();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

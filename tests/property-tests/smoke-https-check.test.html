@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<!--
+  Smoke Test: HTTPS Protocol Check
+  Feature: webcam-particle-face-ar
+  Task 13.2
+
+  Tests the HTTPS detection logic used in both the inline <head> script and
+  AppController.init(). Verifies that the correct Vietnamese error message is
+  produced when the page is not served over HTTPS or localhost.
+
+  Validates: Requirement 12.2
+  "THE System SHALL yêu cầu kết nối HTTPS hoặc localhost để truy cập
+   Webcam_Stream theo chính sách bảo mật của trình duyệt."
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smoke Test — HTTPS Check</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Smoke Test — HTTPS Protocol Check</h1>
+    <h2>Feature: webcam-particle-face-ar &nbsp;|&nbsp; Task 13.2 &nbsp;|&nbsp; Validates: Requirement 12.2</h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <script>
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // The HTTPS detection logic extracted from AppController.init() and index.html
+        // -------------------------------------------------------------------------
+
+        /**
+         * Replicate the HTTPS check from AppController.init() and the inline <head> script.
+         * Returns the error message if the origin is insecure, or null if secure.
+         *
+         * @param {{ protocol: string, hostname: string }} locationObj  Injectable location mock
+         */
+        function checkHTTPS(locationObj) {
+            const { protocol, hostname } = locationObj;
+            if (
+                protocol !== 'https:' &&
+                hostname !== 'localhost' &&
+                hostname !== '127.0.0.1'
+            ) {
+                return 'Ứng dụng yêu cầu kết nối HTTPS để truy cập camera. Vui lòng mở qua HTTPS hoặc localhost.';
+            }
+            return null;
+        }
+
+        // -------------------------------------------------------------------------
+        // Test 1: Current page is served over a secure origin (localhost or HTTPS)
+        // -------------------------------------------------------------------------
+        function testCurrentOriginIsSecure() {
+            log('\n── Test 1: Current page is served over a secure origin ──', 'title');
+
+            const errorMsg = checkHTTPS(location);
+
+            // This test file should be opened via localhost or HTTPS
+            recordResult(
+                'Current page is served over HTTPS or localhost (no error)',
+                errorMsg === null,
+                errorMsg ? `Unexpected error: ${errorMsg}` : ''
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Test 2: HTTP (non-localhost) → correct error message
+        // -------------------------------------------------------------------------
+        function testHTTPOriginBlocked() {
+            log('\n── Test 2: HTTP non-localhost origin → correct Vietnamese error message ──', 'title');
+
+            const mockLocation = { protocol: 'http:', hostname: 'example.com' };
+            const errorMsg = checkHTTPS(mockLocation);
+
+            const expectedMsg = 'Ứng dụng yêu cầu kết nối HTTPS để truy cập camera. Vui lòng mở qua HTTPS hoặc localhost.';
+
+            recordResult(
+                'http://example.com → returns correct Vietnamese error message',
+                errorMsg === expectedMsg,
+                `Got: "${errorMsg}"\nExpected: "${expectedMsg}"`
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Test 3: HTTPS origin → no error
+        // -------------------------------------------------------------------------
+        function testHTTPSOriginAllowed() {
+            log('\n── Test 3: HTTPS origin → no error ──', 'title');
+
+            const cases = [
+                { protocol: 'https:', hostname: 'example.com' },
+                { protocol: 'https:', hostname: 'myapp.vercel.app' },
+                { protocol: 'https:', hostname: '192.168.1.1' },
+            ];
+
+            for (const loc of cases) {
+                const errorMsg = checkHTTPS(loc);
+                recordResult(
+                    `${loc.protocol}//${loc.hostname} → allowed (no error)`,
+                    errorMsg === null,
+                    `Got: "${errorMsg}"`
+                );
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Test 4: localhost variants → no error
+        // -------------------------------------------------------------------------
+        function testLocalhostAllowed() {
+            log('\n── Test 4: localhost and 127.0.0.1 → allowed ──', 'title');
+
+            const cases = [
+                { protocol: 'http:', hostname: 'localhost' },
+                { protocol: 'http:', hostname: '127.0.0.1' },
+                { protocol: 'https:', hostname: 'localhost' },
+                { protocol: 'https:', hostname: '127.0.0.1' },
+            ];
+
+            for (const loc of cases) {
+                const errorMsg = checkHTTPS(loc);
+                recordResult(
+                    `${loc.protocol}//${loc.hostname} → allowed (no error)`,
+                    errorMsg === null,
+                    `Got: "${errorMsg}"`
+                );
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Test 5: file:// protocol → blocked (not HTTPS or localhost)
+        // -------------------------------------------------------------------------
+        function testFileProtocolBlocked() {
+            log('\n── Test 5: file:// protocol → blocked ──', 'title');
+
+            const mockLocation = { protocol: 'file:', hostname: '' };
+            const errorMsg = checkHTTPS(mockLocation);
+
+            recordResult(
+                'file:// protocol → returns error message',
+                errorMsg !== null,
+                'Expected an error message for file:// protocol'
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Test 6: Error message contains required content
+        // -------------------------------------------------------------------------
+        function testErrorMessageContent() {
+            log('\n── Test 6: Error message contains required guidance text ──', 'title');
+
+            const mockLocation = { protocol: 'http:', hostname: 'example.com' };
+            const errorMsg = checkHTTPS(mockLocation);
+
+            recordResult(
+                'Error message mentions HTTPS',
+                errorMsg && errorMsg.includes('HTTPS'),
+                `Message: "${errorMsg}"`
+            );
+            recordResult(
+                'Error message mentions camera',
+                errorMsg && (errorMsg.includes('camera') || errorMsg.includes('Camera')),
+                `Message: "${errorMsg}"`
+            );
+            recordResult(
+                'Error message is in Vietnamese',
+                errorMsg && errorMsg.includes('Ứng dụng'),
+                `Message: "${errorMsg}"`
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all tests
+        // -------------------------------------------------------------------------
+        function runAll() {
+            log('Starting HTTPS check smoke tests…\n', 'info');
+
+            testCurrentOriginIsSecure();
+            testHTTPOriginBlocked();
+            testHTTPSOriginAllowed();
+            testLocalhostAllowed();
+            testFileProtocolBlocked();
+            testErrorMessageContent();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

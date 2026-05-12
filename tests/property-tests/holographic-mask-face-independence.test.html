@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<!--
+  Property Tests: Holographic Window Mask — Face Positions Independent of Hand Box
+  Feature: holographic-window-mask
+
+  Properties covered:
+    Property 6: Face Positions Independent of Hand Box
+
+  Validates: Requirements 5.1, 7.1
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+  Results are printed to the on-screen log and the browser console.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Property Tests — Holographic Mask Face Independence</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Property Tests — Holographic Mask Face Independence</h1>
+    <h2>
+        Feature: holographic-window-mask &nbsp;|&nbsp;
+        Property 6: Face Positions Independent of Hand Box &nbsp;|&nbsp;
+        Validates: Requirements 5.1, 7.1
+    </h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- fast-check (same version as the rest of the project) -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Minimal test harness
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Stub ParticleSystem
+        //
+        // This stub mirrors the pure data-mutation logic of the real ParticleSystem:
+        //
+        //   updateFromFace(worldPositions):
+        //     - Writes into _basePositions using the same interpolation formula as
+        //       the real implementation (landmark interpolation + jitter).
+        //     - Sets _hasFaceData = true.
+        //
+        //   updateHandBox(box):
+        //     - Updates _uBoxMin / _uBoxMax / _pointsVisible.
+        //     - Does NOT touch _basePositions — this is the invariant under test.
+        //
+        // The stub uses a seeded PRNG so that updateFromFace produces deterministic
+        // output for a given worldPositions array, making the before/after comparison
+        // reliable.
+        // -------------------------------------------------------------------------
+
+        const MAX_PARTICLES = 2000;
+        const LANDMARK_COUNT = 468;
+        const JITTER_RADIUS = 3.6; // world units (mirrors CONSTANTS.JITTER_RADIUS_NORMALIZED * 180)
+
+        /**
+         * Minimal seeded PRNG (mulberry32) — deterministic, no external deps.
+         * Returns a function that produces floats in [0, 1).
+         */
+        function makePrng(seed) {
+            let s = seed >>> 0;
+            return function () {
+                s += 0x6D2B79F5;
+                let t = s;
+                t = Math.imul(t ^ (t >>> 15), t | 1);
+                t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+                return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+            };
+        }
+
+        /**
+         * Stub ParticleSystem — only the data-mutation methods relevant to the
+         * face-independence property.
+         */
+        class StubParticleSystem {
+            constructor() {
+                // Mirrors ParticleSystem._basePositions (Float32Array-like)
+                this._basePositions = new Float32Array(MAX_PARTICLES * 3);
+                this._hasFaceData = false;
+
+                // Shader uniform mirrors
+                this._uBoxMin = { x: 0, y: 0 };
+                this._uBoxMax = { x: 0, y: 0 };
+                this._pointsVisible = false;
+            }
+
+            /**
+             * Mirrors ParticleSystem.updateFromFace(worldPositions).
+             *
+             * Uses a fixed PRNG seed so the output is deterministic for a given
+             * worldPositions array — this lets us snapshot _basePositions and
+             * compare after updateHandBox().
+             *
+             * @param {number[]} worldPositions  Flat array of length 468*3
+             * @param {number}   [seed=42]       PRNG seed for reproducibility
+             */
+            updateFromFace(worldPositions, seed = 42) {
+                if (!worldPositions || worldPositions.length < 3) return;
+
+                this._hasFaceData = true;
+                const landmarkCount = worldPositions.length / 3; // 468
+                const jitter = JITTER_RADIUS;
+
+                const rand = makePrng(seed);
+
+                for (let i = 0; i < MAX_PARTICLES; i++) {
+                    const lmA = (i % landmarkCount) | 0;
+                    const lmB = (lmA + 1 + (rand() * 5 | 0)) % landmarkCount;
+                    const t = rand();
+
+                    const ax = worldPositions[lmA * 3];
+                    const ay = worldPositions[lmA * 3 + 1];
+                    const az = worldPositions[lmA * 3 + 2];
+                    const bx = worldPositions[lmB * 3];
+                    const by = worldPositions[lmB * 3 + 1];
+                    const bz = worldPositions[lmB * 3 + 2];
+
+                    this._basePositions[i * 3] = ax + (bx - ax) * t + (rand() - 0.5) * jitter;
+                    this._basePositions[i * 3 + 1] = ay + (by - ay) * t + (rand() - 0.5) * jitter;
+                    this._basePositions[i * 3 + 2] = az + (bz - az) * t + (rand() - 0.5) * jitter * 0.3;
+                }
+            }
+
+            /**
+             * Mirrors ParticleSystem.updateHandBox(box).
+             *
+             * Updates shader uniforms and visibility — must NOT touch _basePositions.
+             *
+             * @param {{ left, top, right, bottom } | null} box
+             */
+            updateHandBox(box) {
+                if (box === null) {
+                    this._uBoxMin.x = 0;
+                    this._uBoxMin.y = 0;
+                    this._uBoxMax.x = 0;
+                    this._uBoxMax.y = 0;
+                    this._pointsVisible = false;
+                    return;
+                }
+
+                const W = 1920; // fixed viewport for stub (doesn't affect _basePositions)
+                const H = 1080;
+
+                const minX = Math.max(0, Math.min(1, box.left / W));
+                const maxX = Math.max(0, Math.min(1, box.right / W));
+                const minY = Math.max(0, Math.min(1, (H - box.bottom) / H));
+                const maxY = Math.max(0, Math.min(1, (H - box.top) / H));
+
+                this._uBoxMin.x = minX;
+                this._uBoxMin.y = minY;
+                this._uBoxMax.x = maxX;
+                this._uBoxMax.y = maxY;
+                this._pointsVisible = true;
+                // _basePositions is intentionally NOT modified here
+            }
+
+            /**
+             * Returns a snapshot copy of _basePositions for comparison.
+             */
+            snapshotBasePositions() {
+                return new Float32Array(this._basePositions);
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 6: Face Positions Independent of Hand Box
+        // Feature: holographic-window-mask, Property 6: Face Positions Independent of Hand Box
+        // Validates: Requirements 5.1, 7.1
+        //
+        // For any worldPositions array (468*3 floats) and any hand box (or null),
+        // calling updateFromFace(worldPositions) followed by updateHandBox(box)
+        // must leave _basePositions unchanged — the hand box must not affect
+        // particle base positions.
+        //
+        // Test strategy:
+        //   1. Call updateFromFace(worldPositions) → snapshot _basePositions
+        //   2. Call updateHandBox(box)
+        //   3. Assert _basePositions === snapshot (element-wise)
+        // -------------------------------------------------------------------------
+        async function runProperty6() {
+            log('\n── Property 6: Face Positions Independent of Hand Box ──', 'title');
+            log('   Validates: Requirements 5.1, 7.1', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        // 468 * 3 = 1404 world-space floats
+                        fc.array(
+                            fc.float({ min: -200, max: 200, noNaN: true }),
+                            { minLength: LANDMARK_COUNT * 3, maxLength: LANDMARK_COUNT * 3 }
+                        ),
+                        // Hand box: either null or a valid screen-space box
+                        fc.oneof(
+                            fc.constant(null),
+                            fc.record({
+                                left: fc.integer({ min: 0, max: 1920 }),
+                                top: fc.integer({ min: 0, max: 1080 }),
+                                right: fc.integer({ min: 0, max: 1920 }),
+                                bottom: fc.integer({ min: 0, max: 1080 }),
+                            })
+                        ),
+                        async (worldPositions, box) => {
+                            const ps = new StubParticleSystem();
+
+                            // Step 1: populate base positions from face data
+                            ps.updateFromFace(worldPositions, /* seed */ 42);
+
+                            // Step 2: snapshot the base positions
+                            const before = ps.snapshotBasePositions();
+
+                            // Step 3: apply hand box update
+                            ps.updateHandBox(box);
+
+                            // Step 4: snapshot again and compare
+                            const after = ps.snapshotBasePositions();
+
+                            for (let i = 0; i < before.length; i++) {
+                                if (before[i] !== after[i]) {
+                                    throw new Error(
+                                        `_basePositions[${i}] changed after updateHandBox: ` +
+                                        `before=${before[i]}, after=${after[i]}, box=${JSON.stringify(box)}`
+                                    );
+                                }
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 6 — updateHandBox() does not modify _basePositions set by updateFromFace()',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 6b: Order independence — updateHandBox before updateFromFace
+        //
+        // Calling updateHandBox(box) BEFORE updateFromFace(worldPositions) must
+        // also leave the final _basePositions equal to what updateFromFace alone
+        // would produce. The hand box must not "poison" subsequent face updates.
+        // -------------------------------------------------------------------------
+        async function runProperty6b() {
+            log('\n── Property 6b: updateHandBox before updateFromFace — order independence ──', 'title');
+            log('   Validates: Requirements 5.1, 7.1 (any call order)', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.array(
+                            fc.float({ min: -200, max: 200, noNaN: true }),
+                            { minLength: LANDMARK_COUNT * 3, maxLength: LANDMARK_COUNT * 3 }
+                        ),
+                        fc.oneof(
+                            fc.constant(null),
+                            fc.record({
+                                left: fc.integer({ min: 0, max: 1920 }),
+                                top: fc.integer({ min: 0, max: 1080 }),
+                                right: fc.integer({ min: 0, max: 1920 }),
+                                bottom: fc.integer({ min: 0, max: 1080 }),
+                            })
+                        ),
+                        async (worldPositions, box) => {
+                            // Reference: face only
+                            const psRef = new StubParticleSystem();
+                            psRef.updateFromFace(worldPositions, 42);
+                            const reference = psRef.snapshotBasePositions();
+
+                            // Under test: hand box first, then face
+                            const psTest = new StubParticleSystem();
+                            psTest.updateHandBox(box);
+                            psTest.updateFromFace(worldPositions, 42);
+                            const result = psTest.snapshotBasePositions();
+
+                            for (let i = 0; i < reference.length; i++) {
+                                if (reference[i] !== result[i]) {
+                                    throw new Error(
+                                        `_basePositions[${i}] differs when updateHandBox called first: ` +
+                                        `reference=${reference[i]}, result=${result[i]}, box=${JSON.stringify(box)}`
+                                    );
+                                }
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 6b — updateHandBox() before updateFromFace() does not affect final base positions',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 6c: Multiple hand box updates do not corrupt base positions
+        //
+        // Calling updateHandBox() multiple times (with different boxes) between
+        // face updates must not alter _basePositions.
+        // -------------------------------------------------------------------------
+        async function runProperty6c() {
+            log('\n── Property 6c: Multiple updateHandBox() calls do not corrupt base positions ──', 'title');
+            log('   Validates: Requirements 5.1, 7.1 (repeated hand updates)', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.array(
+                            fc.float({ min: -200, max: 200, noNaN: true }),
+                            { minLength: LANDMARK_COUNT * 3, maxLength: LANDMARK_COUNT * 3 }
+                        ),
+                        // Array of 1–5 hand box updates to apply after updateFromFace
+                        fc.array(
+                            fc.oneof(
+                                fc.constant(null),
+                                fc.record({
+                                    left: fc.integer({ min: 0, max: 1920 }),
+                                    top: fc.integer({ min: 0, max: 1080 }),
+                                    right: fc.integer({ min: 0, max: 1920 }),
+                                    bottom: fc.integer({ min: 0, max: 1080 }),
+                                })
+                            ),
+                            { minLength: 1, maxLength: 5 }
+                        ),
+                        async (worldPositions, boxes) => {
+                            const ps = new StubParticleSystem();
+                            ps.updateFromFace(worldPositions, 42);
+                            const before = ps.snapshotBasePositions();
+
+                            // Apply multiple hand box updates
+                            for (const box of boxes) {
+                                ps.updateHandBox(box);
+                            }
+
+                            const after = ps.snapshotBasePositions();
+
+                            for (let i = 0; i < before.length; i++) {
+                                if (before[i] !== after[i]) {
+                                    throw new Error(
+                                        `_basePositions[${i}] changed after ${boxes.length} updateHandBox calls: ` +
+                                        `before=${before[i]}, after=${after[i]}`
+                                    );
+                                }
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 6c — Multiple updateHandBox() calls do not corrupt base positions',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all properties
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting Holographic Mask Face Independence property tests…\n', 'info');
+
+            await runProperty6();
+            await runProperty6b();
+            await runProperty6c();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

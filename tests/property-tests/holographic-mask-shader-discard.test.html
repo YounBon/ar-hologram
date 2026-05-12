@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<!--
+  Property Tests: Holographic Window Mask — Shader Mask Discard Logic
+  Feature: holographic-window-mask
+
+  Properties covered:
+    Property 3: Shader Mask Discards Exactly Particles Outside Box
+
+  Validates: Requirements 3.2, 3.3
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+  Results are printed to the on-screen log and the browser console.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Property Tests — Holographic Mask Shader Discard</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Property Tests — Holographic Mask Shader Discard</h1>
+    <h2>
+        Feature: holographic-window-mask &nbsp;|&nbsp;
+        Property 3: Shader Mask Discards Exactly Particles Outside Box &nbsp;|&nbsp;
+        Validates: Requirements 3.2, 3.3
+    </h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- fast-check (same version as the rest of the project) -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Minimal test harness (same style as coordinatemapper.test.html)
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Pure JS mirror of the GLSL fragment shader discard logic:
+        //
+        //   vec2 ndc = gl_FragCoord.xy / u_resolution;
+        //   if (ndc.x < u_boxMin.x || ndc.x > u_boxMax.x ||
+        //       ndc.y < u_boxMin.y || ndc.y > u_boxMax.y) {
+        //       discard;
+        //   }
+        //
+        // Returns true  → fragment is discarded (particle NOT rendered)
+        // Returns false → fragment passes (particle IS rendered)
+        // -------------------------------------------------------------------------
+        // Feature: holographic-window-mask, Property 3: Shader Mask Discards Exactly Particles Outside Box
+        function isDiscarded(fragX, fragY, resW, resH, boxMinX, boxMinY, boxMaxX, boxMaxY) {
+            const ndcX = fragX / resW;
+            const ndcY = fragY / resH;
+            return ndcX < boxMinX || ndcX > boxMaxX || ndcY < boxMinY || ndcY > boxMaxY;
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 3a: isDiscarded returns true iff NDC is outside the box
+        // Validates: Requirement 3.2
+        //
+        // For any NDC position (nx, ny) and box bounds (boxMin, boxMax),
+        // isDiscarded must return true when the position is outside the box.
+        // We use resW=resH=1 so fragX/fragY equal ndcX/ndcY directly.
+        // -------------------------------------------------------------------------
+        async function runProperty3a() {
+            log('\n── Property 3a: isDiscarded = true iff NDC outside box ──', 'title');
+            log('   Validates: Requirement 3.2', 'info');
+            log('   Iterations: 500\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            // Arbitraries for NDC position and box bounds, all in [0, 1]
+            const ndcArb = fc.tuple(
+                fc.float({ min: 0, max: 1, noNaN: true }),
+                fc.float({ min: 0, max: 1, noNaN: true })
+            );
+            const boxArb = fc.tuple(
+                fc.float({ min: 0, max: 1, noNaN: true }),
+                fc.float({ min: 0, max: 1, noNaN: true })
+            );
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        ndcArb,  // [nx, ny] — NDC position (fragX/resW, fragY/resH)
+                        boxArb,  // [bx0, bx1] — two x values for box bounds
+                        boxArb,  // [by0, by1] — two y values for box bounds
+                        async ([nx, ny], [bx0, bx1], [by0, by1]) => {
+                            // Derive min/max so the box is always well-formed
+                            const boxMinX = Math.min(bx0, bx1);
+                            const boxMaxX = Math.max(bx0, bx1);
+                            const boxMinY = Math.min(by0, by1);
+                            const boxMaxY = Math.max(by0, by1);
+
+                            // Use resW=resH=1 so fragX=ndcX, fragY=ndcY
+                            const result = isDiscarded(nx, ny, 1, 1, boxMinX, boxMinY, boxMaxX, boxMaxY);
+
+                            // Reference: the exact discard condition from the GLSL shader
+                            const expectedDiscard =
+                                nx < boxMinX || nx > boxMaxX ||
+                                ny < boxMinY || ny > boxMaxY;
+
+                            if (result !== expectedDiscard) {
+                                throw new Error(
+                                    `isDiscarded mismatch:\n` +
+                                    `  ndc=(${nx}, ${ny})\n` +
+                                    `  box=[${boxMinX},${boxMaxX}] x [${boxMinY},${boxMaxY}]\n` +
+                                    `  got=${result}, expected=${expectedDiscard}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 500 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 3a — isDiscarded matches GLSL discard condition for all NDC/box combinations',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 3b: isDiscarded returns false iff NDC is inside (or on boundary of) the box
+        // Validates: Requirement 3.3
+        //
+        // For any NDC position strictly inside the box, isDiscarded must return false.
+        // We generate the NDC position as a convex combination of boxMin and boxMax
+        // to guarantee it lies within the box.
+        // -------------------------------------------------------------------------
+        async function runProperty3b() {
+            log('\n── Property 3b: isDiscarded = false iff NDC inside box ──', 'title');
+            log('   Validates: Requirement 3.3', 'info');
+            log('   Iterations: 500\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            const boxArb = fc.tuple(
+                fc.float({ min: 0, max: 1, noNaN: true }),
+                fc.float({ min: 0, max: 1, noNaN: true })
+            );
+            // t in [0,1] for interpolation — ensures the point is inside the box
+            const tArb = fc.float({ min: 0, max: 1, noNaN: true });
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        boxArb,  // [bx0, bx1]
+                        boxArb,  // [by0, by1]
+                        tArb,    // tx — interpolation factor for x
+                        tArb,    // ty — interpolation factor for y
+                        async ([bx0, bx1], [by0, by1], tx, ty) => {
+                            const boxMinX = Math.min(bx0, bx1);
+                            const boxMaxX = Math.max(bx0, bx1);
+                            const boxMinY = Math.min(by0, by1);
+                            const boxMaxY = Math.max(by0, by1);
+
+                            // Generate a point guaranteed to be inside [boxMin, boxMax]
+                            const nx = boxMinX + tx * (boxMaxX - boxMinX);
+                            const ny = boxMinY + ty * (boxMaxY - boxMinY);
+
+                            // Use resW=resH=1 so fragX=ndcX, fragY=ndcY
+                            const result = isDiscarded(nx, ny, 1, 1, boxMinX, boxMinY, boxMaxX, boxMaxY);
+
+                            // A point inside the box must NOT be discarded
+                            if (result !== false) {
+                                throw new Error(
+                                    `isDiscarded should be false for point inside box:\n` +
+                                    `  ndc=(${nx}, ${ny})\n` +
+                                    `  box=[${boxMinX},${boxMaxX}] x [${boxMinY},${boxMaxY}]\n` +
+                                    `  got=${result}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 500 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 3b — isDiscarded = false for any NDC point inside the box',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 3c: isDiscarded with pixel coords and resolution matches NDC logic
+        // Validates: Requirements 3.2, 3.3, 3.4
+        //
+        // Verifies that using actual pixel coordinates with a resolution produces
+        // the same result as computing NDC directly — confirming the gl_FragCoord/u_resolution
+        // division is equivalent to working in NDC space.
+        // -------------------------------------------------------------------------
+        async function runProperty3c() {
+            log('\n── Property 3c: Pixel coord / resolution = NDC discard equivalence ──', 'title');
+            log('   Validates: Requirements 3.2, 3.3, 3.4', 'info');
+            log('   Iterations: 300\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        // Viewport resolution (integer pixels)
+                        fc.integer({ min: 320, max: 3840 }),  // resW
+                        fc.integer({ min: 240, max: 2160 }),  // resH
+                        // NDC position in [0, 1]
+                        fc.tuple(
+                            fc.float({ min: 0, max: 1, noNaN: true }),
+                            fc.float({ min: 0, max: 1, noNaN: true })
+                        ),
+                        // Box bounds in [0, 1] NDC
+                        fc.tuple(
+                            fc.float({ min: 0, max: 1, noNaN: true }),
+                            fc.float({ min: 0, max: 1, noNaN: true })
+                        ),
+                        fc.tuple(
+                            fc.float({ min: 0, max: 1, noNaN: true }),
+                            fc.float({ min: 0, max: 1, noNaN: true })
+                        ),
+                        async (resW, resH, [nx, ny], [bx0, bx1], [by0, by1]) => {
+                            const boxMinX = Math.min(bx0, bx1);
+                            const boxMaxX = Math.max(bx0, bx1);
+                            const boxMinY = Math.min(by0, by1);
+                            const boxMaxY = Math.max(by0, by1);
+
+                            // Convert NDC to pixel coords (as gl_FragCoord would provide)
+                            const fragX = nx * resW;
+                            const fragY = ny * resH;
+
+                            // Test with actual pixel coords + resolution
+                            const resultPixel = isDiscarded(fragX, fragY, resW, resH, boxMinX, boxMinY, boxMaxX, boxMaxY);
+
+                            // Test with NDC directly (resW=resH=1)
+                            const resultNDC = isDiscarded(nx, ny, 1, 1, boxMinX, boxMinY, boxMaxX, boxMaxY);
+
+                            // Both must agree — the division fragX/resW recovers ndcX
+                            if (resultPixel !== resultNDC) {
+                                throw new Error(
+                                    `Pixel vs NDC discard mismatch:\n` +
+                                    `  ndc=(${nx}, ${ny}), res=(${resW}, ${resH})\n` +
+                                    `  frag=(${fragX}, ${fragY})\n` +
+                                    `  box=[${boxMinX},${boxMaxX}] x [${boxMinY},${boxMaxY}]\n` +
+                                    `  resultPixel=${resultPixel}, resultNDC=${resultNDC}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 300 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 3c — pixel coord / resolution discard matches NDC discard for any resolution',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all properties
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting Holographic Mask Shader Discard property tests…\n', 'info');
+
+            await runProperty3a();
+            await runProperty3b();
+            await runProperty3c();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

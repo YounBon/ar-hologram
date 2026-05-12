@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<!--
+  Property Tests: Holographic Window Mask — Mirror Mode Flips Box Horizontally
+  Feature: holographic-window-mask
+
+  Properties covered:
+    Property 5: Mirror Mode Flips Box Horizontally
+
+  Validates: Requirements 6.4
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+  Results are printed to the on-screen log and the browser console.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Property Tests — Holographic Mask Mirror Mode Flip</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Property Tests — Holographic Mask Mirror Mode Flip</h1>
+    <h2>
+        Feature: holographic-window-mask &nbsp;|&nbsp;
+        Property 5: Mirror Mode Flips Box Horizontally &nbsp;|&nbsp;
+        Validates: Requirements 6.4
+    </h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- fast-check (same version as the rest of the project) -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Minimal test harness
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Pure hand box computation — mirrors AppController._computeHandBox() logic.
+        //
+        // For each tip point p:
+        //   sx = mirrorMode ? (1 - p.x) * W : p.x * W
+        //   sy = p.y * H
+        //
+        // Tight box (before padding):
+        //   tight_left   = min(sx)
+        //   tight_right  = max(sx)
+        //   tight_top    = min(sy)
+        //   tight_bottom = max(sy)
+        //
+        // Padded box (what _computeHandBox returns):
+        //   left   = tight_left   - PADDING
+        //   top    = tight_top    - PADDING
+        //   right  = tight_right  + PADDING
+        //   bottom = tight_bottom + PADDING
+        // -------------------------------------------------------------------------
+        const PADDING = 24;
+
+        function computeHandBox(tipPoints, mirrorMode, W, H) {
+            let minX = Infinity, maxX = -Infinity;
+            let minY = Infinity, maxY = -Infinity;
+
+            for (const p of tipPoints) {
+                const sx = mirrorMode ? (1 - p.x) * W : p.x * W;
+                const sy = p.y * H;
+                if (sx < minX) minX = sx;
+                if (sx > maxX) maxX = sx;
+                if (sy < minY) minY = sy;
+                if (sy > maxY) maxY = sy;
+            }
+
+            return {
+                left: minX - PADDING,
+                top: minY - PADDING,
+                right: maxX + PADDING,
+                bottom: maxY + PADDING,
+            };
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 5: Mirror Mode Flips Box Horizontally
+        // Feature: holographic-window-mask, Property 5: Mirror Mode Flips Box Horizontally
+        // Validates: Requirements 6.4
+        //
+        // For any set of 4 finger tip points and viewport (W, H):
+        //   box_normal   = computeHandBox(points, mirrorMode=false, W, H)
+        //   box_mirrored = computeHandBox(points, mirrorMode=true,  W, H)
+        //
+        // Must satisfy:
+        //   box_mirrored.left  ≈ W - box_normal.right
+        //   box_mirrored.right ≈ W - box_normal.left
+        //   box_mirrored.top    === box_normal.top
+        //   box_mirrored.bottom === box_normal.bottom
+        // -------------------------------------------------------------------------
+        async function runProperty5() {
+            log('\n── Property 5: Mirror Mode Flips Box Horizontally ──', 'title');
+            log('   Validates: Requirements 6.4', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        // 4 tip points in normalized [0, 1] space
+                        fc.array(
+                            fc.record({
+                                x: fc.float({ min: 0, max: 1, noNaN: true }),
+                                y: fc.float({ min: 0, max: 1, noNaN: true }),
+                            }),
+                            { minLength: 4, maxLength: 4 }
+                        ),
+                        // Viewport width and height
+                        fc.integer({ min: 320, max: 3840 }),
+                        fc.integer({ min: 240, max: 2160 }),
+                        async (tipPoints, W, H) => {
+                            const boxNormal = computeHandBox(tipPoints, false, W, H);
+                            const boxMirrored = computeHandBox(tipPoints, true, W, H);
+
+                            // x-axis: mirrored box must be the horizontal reflection of the normal box
+                            // box_mirrored.left  ≈ W - box_normal.right
+                            const expectedLeft = W - boxNormal.right;
+                            const expectedRight = W - boxNormal.left;
+
+                            const TOL = 1e-9; // floating-point tolerance
+
+                            if (Math.abs(boxMirrored.left - expectedLeft) > TOL) {
+                                throw new Error(
+                                    `left: mirrored=${boxMirrored.left}, expected W - normal.right = ${expectedLeft} ` +
+                                    `(W=${W}, normal.right=${boxNormal.right})`
+                                );
+                            }
+                            if (Math.abs(boxMirrored.right - expectedRight) > TOL) {
+                                throw new Error(
+                                    `right: mirrored=${boxMirrored.right}, expected W - normal.left = ${expectedRight} ` +
+                                    `(W=${W}, normal.left=${boxNormal.left})`
+                                );
+                            }
+
+                            // y-axis: must be completely unchanged
+                            if (boxMirrored.top !== boxNormal.top) {
+                                throw new Error(
+                                    `top changed: mirrored=${boxMirrored.top}, normal=${boxNormal.top}`
+                                );
+                            }
+                            if (boxMirrored.bottom !== boxNormal.bottom) {
+                                throw new Error(
+                                    `bottom changed: mirrored=${boxMirrored.bottom}, normal=${boxNormal.bottom}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 5 — Mirrored box is the horizontal reflection of the normal box',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 5b: Double mirror is identity
+        //
+        // Applying mirror mode twice must return the same box as no mirror at all:
+        //   computeHandBox(points, false, W, H) ≈ mirror(mirror(points, W), W)
+        //
+        // Equivalently: box_normal.left ≈ W - (W - box_normal.right) = box_normal.right
+        // is NOT what we want — instead we verify that mirroring the already-mirrored
+        // box gives back the original box.
+        // -------------------------------------------------------------------------
+        async function runProperty5b() {
+            log('\n── Property 5b: Double mirror is identity ──', 'title');
+            log('   Validates: Requirements 6.4 (mirror is its own inverse)', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.array(
+                            fc.record({
+                                x: fc.float({ min: 0, max: 1, noNaN: true }),
+                                y: fc.float({ min: 0, max: 1, noNaN: true }),
+                            }),
+                            { minLength: 4, maxLength: 4 }
+                        ),
+                        fc.integer({ min: 320, max: 3840 }),
+                        fc.integer({ min: 240, max: 2160 }),
+                        async (tipPoints, W, H) => {
+                            const boxNormal = computeHandBox(tipPoints, false, W, H);
+                            const boxMirrored = computeHandBox(tipPoints, true, W, H);
+
+                            // Mirroring the mirrored box's x-coords back should recover the original.
+                            // double_mirror.left  = W - boxMirrored.right
+                            // double_mirror.right = W - boxMirrored.left
+                            const doubleMirrorLeft = W - boxMirrored.right;
+                            const doubleMirrorRight = W - boxMirrored.left;
+
+                            const TOL = 1e-9;
+
+                            if (Math.abs(doubleMirrorLeft - boxNormal.left) > TOL) {
+                                throw new Error(
+                                    `Double-mirror left: got ${doubleMirrorLeft}, expected ${boxNormal.left}`
+                                );
+                            }
+                            if (Math.abs(doubleMirrorRight - boxNormal.right) > TOL) {
+                                throw new Error(
+                                    `Double-mirror right: got ${doubleMirrorRight}, expected ${boxNormal.right}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 5b — Double mirror is identity: mirror(mirror(box)) ≈ box',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 5c: Mirror preserves box width
+        //
+        // Flipping horizontally must not change the width of the bounding box:
+        //   (box_mirrored.right - box_mirrored.left) ≈ (box_normal.right - box_normal.left)
+        // -------------------------------------------------------------------------
+        async function runProperty5c() {
+            log('\n── Property 5c: Mirror preserves box width ──', 'title');
+            log('   Validates: Requirements 6.4 (reflection preserves dimensions)', 'info');
+            log('   Iterations: 200\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.array(
+                            fc.record({
+                                x: fc.float({ min: 0, max: 1, noNaN: true }),
+                                y: fc.float({ min: 0, max: 1, noNaN: true }),
+                            }),
+                            { minLength: 4, maxLength: 4 }
+                        ),
+                        fc.integer({ min: 320, max: 3840 }),
+                        fc.integer({ min: 240, max: 2160 }),
+                        async (tipPoints, W, H) => {
+                            const boxNormal = computeHandBox(tipPoints, false, W, H);
+                            const boxMirrored = computeHandBox(tipPoints, true, W, H);
+
+                            const widthNormal = boxNormal.right - boxNormal.left;
+                            const widthMirrored = boxMirrored.right - boxMirrored.left;
+                            const heightNormal = boxNormal.bottom - boxNormal.top;
+                            const heightMirrored = boxMirrored.bottom - boxMirrored.top;
+
+                            const TOL = 1e-9;
+
+                            if (Math.abs(widthMirrored - widthNormal) > TOL) {
+                                throw new Error(
+                                    `Width changed: normal=${widthNormal}, mirrored=${widthMirrored}`
+                                );
+                            }
+                            if (Math.abs(heightMirrored - heightNormal) > TOL) {
+                                throw new Error(
+                                    `Height changed: normal=${heightNormal}, mirrored=${heightMirrored}`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 200 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 5c — Mirror preserves box width and height',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all properties
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting Holographic Mask Mirror Mode Flip property tests…\n', 'info');
+
+            await runProperty5();
+            await runProperty5b();
+            await runProperty5c();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

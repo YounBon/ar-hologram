@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<!--
+  Property Test: ParticleSystem Color Cycle Duration Per Particle Is in Valid Range
+  Feature: webcam-particle-face-ar, Property 14: Color Cycle Duration Per Particle Is in Valid Range
+
+  "For any particle that is initialised, its cycleDuration must be in the range
+   [2.0, 5.0] seconds."
+
+  Validates: Requirement 6.3
+  "THE Particle_Cloud SHALL cập nhật màu sắc của mỗi Particle theo thời gian với
+   chu kỳ dao động 2–5 giây để tạo hiệu ứng nhấp nháy nhẹ."
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+  Results are printed to the on-screen log and the browser console.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Property Test — ParticleSystem Color Cycle Duration</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Property Test — ParticleSystem Color Cycle Duration</h1>
+    <h2>
+        Feature: webcam-particle-face-ar &nbsp;|&nbsp;
+        Property 14 &nbsp;|&nbsp;
+        Validates: Requirement 6.3
+    </h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- fast-check (same version as the rest of the project) -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <!-- Minimal THREE stubs — only the subset used by ParticleSystem is needed -->
+    <script>
+        const THREE = {
+            BufferAttribute: class BufferAttribute {
+                constructor(array, itemSize) {
+                    this.array = array;
+                    this.itemSize = itemSize;
+                    this.needsUpdate = false;
+                }
+            },
+
+            BufferGeometry: class BufferGeometry {
+                constructor() { this._attrs = {}; }
+                setAttribute(name, attr) { this._attrs[name] = attr; }
+                get attributes() { return this._attrs; }
+                dispose() { }
+            },
+
+            PointsMaterial: class PointsMaterial {
+                constructor(opts) { Object.assign(this, opts); }
+            },
+
+            Vector3: class Vector3 {
+                constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+                set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }
+                copy(v) { this.x = v.x; this.y = v.y; this.z = v.z; return this; }
+                lerp(v, t) {
+                    this.x += (v.x - this.x) * t;
+                    this.y += (v.y - this.y) * t;
+                    this.z += (v.z - this.z) * t;
+                    return this;
+                }
+            },
+        };
+
+        THREE.Points = class Points {
+            constructor(geometry, material) {
+                this.geometry = geometry;
+                this.material = material;
+                this.position = new THREE.Vector3();
+                this.scale = { setScalar(s) { } };
+            }
+        };
+    </script>
+
+    <!-- CONSTANTS (full set so ParticleSystem resolves every reference) -->
+    <script>
+        const CONSTANTS = {
+            DEPTH_SCALE: 50,
+            DEFAULT_PARTICLE_COUNT: 2000,
+            MIN_PARTICLES: 500,
+            MAX_PARTICLES: 5000,
+            LERP_POSITION: 0.1,
+            LERP_SCALE: 0.08,
+            LERP_BACK: 0.01,
+            JITTER_RADIUS_NORMALIZED: 0.02,
+            HAND_DIST_MIN: 0.05,
+            HAND_DIST_MAX: 0.8,
+            SCALE_MIN: 0.3,
+            SCALE_MAX: 3.0,
+            CAMERA_FOV: 75,
+            CAMERA_Z: 100,
+        };
+    </script>
+
+    <!-- Module under test -->
+    <script src="../../js/ParticleSystem.js"></script>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Minimal test harness (consistent with other property test files)
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Helpers
+        // -------------------------------------------------------------------------
+
+        /** Minimal CoordinateMapper stub — ParticleSystem only needs computeViewport(). */
+        function makeMapperStub() {
+            return {
+                computeViewport() {
+                    // FOV=75°, cameraZ=100, aspect 16:9
+                    // height ≈ 153.1, width ≈ 272.2
+                    return { width: 272.2, height: 153.1 };
+                }
+            };
+        }
+
+        /** Minimal scene stub. */
+        function makeSceneStub() {
+            return { add() { }, remove() { } };
+        }
+
+        /**
+         * Create, initialise, and return a ParticleSystem with the given count.
+         *
+         * @param {number} count  Particle count (will be clamped by ParticleSystem)
+         */
+        function makeParticleSystem(count) {
+            const ps = new ParticleSystem(makeSceneStub(), makeMapperStub(), count);
+            ps.init();
+            return ps;
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 14: Color Cycle Duration Per Particle Is in Valid Range
+        // Feature: webcam-particle-face-ar, Property 14: Color Cycle Duration Per Particle Is in Valid Range
+        // Validates: Requirement 6.3
+        // -------------------------------------------------------------------------
+
+        /**
+         * 14a — Core property: every cycleDuration assigned during _allocate() is
+         *       in [2.0, 5.0] seconds.
+         *
+         * Strategy: generate a random particle count in [500, 5000], create a
+         * ParticleSystem, then inspect every entry in _cycleDurations.
+         *
+         * Generator: fc.integer({ min: 500, max: 5000 }) for particle count.
+         */
+        async function runProperty14a() {
+            log('\n── Property 14a: all cycleDurations ∈ [2.0, 5.0] after init ──', 'title');
+            log('   Validates: Requirement 6.3', 'info');
+            log('   Generator: fc.integer({ min: 500, max: 5000 }) for particle count', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.integer({ min: 500, max: 5000 }),
+                        async (count) => {
+                            const ps = makeParticleSystem(count);
+                            const durations = ps._cycleDurations;
+
+                            for (let i = 0; i < ps._count; i++) {
+                                const d = durations[i];
+                                if (d < 2.0 || d > 5.0) {
+                                    throw new Error(
+                                        `Particle ${i}: cycleDuration=${d.toFixed(6)} ` +
+                                        `is outside [2.0, 5.0] (count=${count})`
+                                    );
+                                }
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 14a — all cycleDurations ∈ [2.0, 5.0] for random particle counts in [500, 5000]',
+                passed,
+                failDetail
+            );
+        }
+
+        /**
+         * 14b — New particles added by setParticleCount() also have valid durations.
+         *
+         * When the count grows, _allocate() pads new entries with fresh random
+         * values.  This property verifies those new entries are also in [2.0, 5.0].
+         *
+         * Strategy: start with MIN_PARTICLES (500), then grow to a random larger
+         * count and check only the newly added entries.
+         */
+        async function runProperty14b() {
+            log('\n── Property 14b: new particles added by setParticleCount() have valid cycleDurations ──', 'title');
+            log('   Validates: Requirement 6.3', 'info');
+            log('   Generator: fc.integer({ min: 501, max: 5000 }) for new count', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.integer({ min: 501, max: 5000 }),
+                        async (newCount) => {
+                            const ps = makeParticleSystem(500); // start at minimum
+                            const oldCount = ps._count;         // 500
+
+                            ps.setParticleCount(newCount);
+
+                            const durations = ps._cycleDurations;
+                            const actualCount = ps._count;
+
+                            // Check all particles — both preserved and newly added
+                            for (let i = 0; i < actualCount; i++) {
+                                const d = durations[i];
+                                if (d < 2.0 || d > 5.0) {
+                                    throw new Error(
+                                        `Particle ${i} (${i < oldCount ? 'preserved' : 'new'}): ` +
+                                        `cycleDuration=${d.toFixed(6)} outside [2.0, 5.0] ` +
+                                        `(oldCount=${oldCount}, newCount=${newCount})`
+                                    );
+                                }
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 14b — cycleDurations ∈ [2.0, 5.0] after setParticleCount() grows the count',
+                passed,
+                failDetail
+            );
+        }
+
+        /**
+         * 14c — Preserved particles keep their original cycleDurations after
+         *       setParticleCount() shrinks the count.
+         *
+         * When the count shrinks, the first `newCount` entries are copied verbatim.
+         * This property verifies those copied values are still in [2.0, 5.0].
+         */
+        async function runProperty14c() {
+            log('\n── Property 14c: preserved particles keep valid cycleDurations after shrink ──', 'title');
+            log('   Validates: Requirement 6.3', 'info');
+            log('   Generator: fc.integer({ min: 500, max: 4999 }) for new (smaller) count', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.integer({ min: 500, max: 4999 }),
+                        async (newCount) => {
+                            const ps = makeParticleSystem(5000); // start at maximum
+
+                            // Snapshot original durations for the first newCount particles
+                            const originalDurations = Float32Array.from(
+                                ps._cycleDurations.subarray(0, newCount)
+                            );
+
+                            ps.setParticleCount(newCount);
+
+                            const durations = ps._cycleDurations;
+                            const actualCount = ps._count;
+
+                            for (let i = 0; i < actualCount; i++) {
+                                const d = durations[i];
+
+                                // Must still be in valid range
+                                if (d < 2.0 || d > 5.0) {
+                                    throw new Error(
+                                        `Particle ${i}: cycleDuration=${d.toFixed(6)} outside [2.0, 5.0] ` +
+                                        `after shrink to ${newCount}`
+                                    );
+                                }
+
+                                // Must equal the original value (preserved, not re-randomised)
+                                if (Math.abs(d - originalDurations[i]) > 1e-9) {
+                                    throw new Error(
+                                        `Particle ${i}: cycleDuration changed from ` +
+                                        `${originalDurations[i].toFixed(6)} to ${d.toFixed(6)} ` +
+                                        `after shrink — preserved particles must not be re-randomised`
+                                    );
+                                }
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 14c — preserved cycleDurations unchanged and still ∈ [2.0, 5.0] after shrink',
+                passed,
+                failDetail
+            );
+        }
+
+        /**
+         * 14d — cycleDurations are strictly positive (> 0) so they can safely be
+         *       used as divisors in updateColors() without division-by-zero.
+         *
+         * This is implied by [2.0, 5.0] but worth asserting explicitly because
+         * updateColors() computes `deltaTime * (2π / cycleDuration)`.
+         */
+        async function runProperty14d() {
+            log('\n── Property 14d: all cycleDurations are strictly positive (safe divisor) ──', 'title');
+            log('   Validates: Requirement 6.3 (implied — prevents division-by-zero in updateColors)', 'info');
+            log('   Generator: fc.integer({ min: 500, max: 5000 }) for particle count', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.integer({ min: 500, max: 5000 }),
+                        async (count) => {
+                            const ps = makeParticleSystem(count);
+                            const durations = ps._cycleDurations;
+
+                            for (let i = 0; i < ps._count; i++) {
+                                if (!(durations[i] > 0)) {
+                                    throw new Error(
+                                        `Particle ${i}: cycleDuration=${durations[i]} is not > 0 ` +
+                                        `(would cause division-by-zero in updateColors)`
+                                    );
+                                }
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 14d — all cycleDurations > 0 (safe divisor for updateColors)',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Edge-case tests (example-based, complement the PBT properties)
+        // -------------------------------------------------------------------------
+        async function runEdgeCases() {
+            log('\n── Edge Cases (complement to Property 14) ──', 'title');
+
+            // Case 1: minimum particle count (500)
+            {
+                const ps = makeParticleSystem(500);
+                let allOk = true;
+                let failMsg = '';
+                for (let i = 0; i < ps._count; i++) {
+                    const d = ps._cycleDurations[i];
+                    if (d < 2.0 || d > 5.0) {
+                        allOk = false;
+                        failMsg = `Particle ${i}: cycleDuration=${d.toFixed(6)} outside [2.0, 5.0]`;
+                        break;
+                    }
+                }
+                recordResult(
+                    'Edge: minimum count (500) — all cycleDurations ∈ [2.0, 5.0]',
+                    allOk,
+                    failMsg
+                );
+            }
+
+            // Case 2: maximum particle count (5000)
+            {
+                const ps = makeParticleSystem(5000);
+                let allOk = true;
+                let failMsg = '';
+                for (let i = 0; i < ps._count; i++) {
+                    const d = ps._cycleDurations[i];
+                    if (d < 2.0 || d > 5.0) {
+                        allOk = false;
+                        failMsg = `Particle ${i}: cycleDuration=${d.toFixed(6)} outside [2.0, 5.0]`;
+                        break;
+                    }
+                }
+                recordResult(
+                    'Edge: maximum count (5000) — all cycleDurations ∈ [2.0, 5.0]',
+                    allOk,
+                    failMsg
+                );
+            }
+
+            // Case 3: default count (2000)
+            {
+                const ps = makeParticleSystem(2000);
+                let allOk = true;
+                let failMsg = '';
+                for (let i = 0; i < ps._count; i++) {
+                    const d = ps._cycleDurations[i];
+                    if (d < 2.0 || d > 5.0) {
+                        allOk = false;
+                        failMsg = `Particle ${i}: cycleDuration=${d.toFixed(6)} outside [2.0, 5.0]`;
+                        break;
+                    }
+                }
+                recordResult(
+                    'Edge: default count (2000) — all cycleDurations ∈ [2.0, 5.0]',
+                    allOk,
+                    failMsg
+                );
+            }
+
+            // Case 4: cycleDurations are used correctly in updateColors() — no NaN/Infinity
+            {
+                const ps = makeParticleSystem(500);
+                let allOk = true;
+                let failMsg = '';
+
+                // Run a few frames of updateColors() and verify no NaN/Infinity in colors
+                for (let frame = 0; frame < 10; frame++) {
+                    ps.updateColors(1 / 60); // simulate 60 FPS
+                }
+
+                const colors = ps._geometry.attributes.color.array;
+                for (let i = 0; i < ps._count * 3; i++) {
+                    if (!isFinite(colors[i])) {
+                        allOk = false;
+                        failMsg = `Color channel ${i}: value=${colors[i]} is not finite (cycleDuration may be invalid)`;
+                        break;
+                    }
+                }
+                recordResult(
+                    'Edge: updateColors() produces finite RGB values after 10 frames (no NaN/Infinity)',
+                    allOk,
+                    failMsg
+                );
+            }
+
+            // Case 5: statistical distribution — verify durations span the full [2, 5] range
+            //         (not all clustered at one end) using a large sample
+            {
+                const ps = makeParticleSystem(5000);
+                const durations = ps._cycleDurations;
+                let minD = Infinity;
+                let maxD = -Infinity;
+
+                for (let i = 0; i < ps._count; i++) {
+                    if (durations[i] < minD) minD = durations[i];
+                    if (durations[i] > maxD) maxD = durations[i];
+                }
+
+                // With 5000 samples from Uniform[2,5], the probability that all
+                // values fall within a 0.5-wide sub-interval is astronomically small.
+                // We use a loose check: range must span at least 2.0 seconds.
+                const range = maxD - minD;
+                const allOk = range >= 2.0;
+                recordResult(
+                    `Edge: distribution spans ≥ 2.0 s (min=${minD.toFixed(3)}, max=${maxD.toFixed(3)}, range=${range.toFixed(3)})`,
+                    allOk,
+                    allOk ? '' : `Range ${range.toFixed(3)} < 2.0 — distribution appears degenerate`
+                );
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all tests
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting ParticleSystem color cycle duration property tests…\n', 'info');
+
+            await runProperty14a();
+            await runProperty14b();
+            await runProperty14c();
+            await runProperty14d();
+            await runEdgeCases();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<!--
+  Property Test: ParticleSystem Color Hue Stays in Pink-to-Yellow Spectrum
+  Feature: webcam-particle-face-ar, Property 13: Color Hue Stays in Pink-to-Yellow Spectrum
+
+  "For any color phase φ ∈ [0, 2π], the hue computed by
+   hue = (320 + t * 100) % 360  where  t = (sin(φ) + 1) / 2
+   must lie in [0, 60] ∪ [320, 360) — never in the blue range (100°–300°).
+   Additionally, with Intensity Mode on, lightness = 85%; off, lightness = 70%."
+
+  Validates: Requirements 6.1, 6.2, 6.4
+  "THE Particle_Cloud SHALL gán màu cho mỗi Particle trong dải màu từ hồng sáng
+   (HSL: 320°, 100%, 75%) đến vàng (HSL: 60°, 100%, 65%)."
+  "WHERE người dùng bật chế độ Intensity Mode, THE Particle_Cloud SHALL tăng độ
+   sáng của tất cả Particle lên 20% so với giá trị mặc định."
+
+  How to run: Open this file in Chrome via localhost or HTTPS.
+  Results are printed to the on-screen log and the browser console.
+-->
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Property Test — ParticleSystem Color Hue Spectrum</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            padding: 24px;
+            margin: 0;
+        }
+
+        h1 {
+            color: #00ffff;
+            margin-bottom: 4px;
+            font-size: 1.1rem;
+        }
+
+        h2 {
+            color: #aaa;
+            font-size: 0.85rem;
+            font-weight: normal;
+            margin-top: 0;
+        }
+
+        #log {
+            margin-top: 20px;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .pass {
+            color: #00ff88;
+        }
+
+        .fail {
+            color: #ff4444;
+        }
+
+        .info {
+            color: #aaaaaa;
+        }
+
+        .warn {
+            color: #ffcc00;
+        }
+
+        .title {
+            color: #00ccff;
+            font-weight: bold;
+        }
+
+        #summary {
+            margin-top: 24px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+
+        #summary.all-pass {
+            background: #003322;
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        #summary.has-fail {
+            background: #330000;
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Property Test — ParticleSystem Color Hue Spectrum</h1>
+    <h2>
+        Feature: webcam-particle-face-ar &nbsp;|&nbsp;
+        Property 13 &nbsp;|&nbsp;
+        Validates: Requirements 6.1, 6.2, 6.4
+    </h2>
+    <div id="log"></div>
+    <div id="summary"></div>
+
+    <!-- fast-check (same version as the rest of the project) -->
+    <script src="https://cdn.jsdelivr.net/npm/fast-check@3.13.2/lib/bundle/fast-check.min.js"></script>
+
+    <!-- Minimal THREE stubs — only the subset used by ParticleSystem is needed -->
+    <script>
+        const THREE = {
+            BufferAttribute: class BufferAttribute {
+                constructor(array, itemSize) {
+                    this.array = array;
+                    this.itemSize = itemSize;
+                    this.needsUpdate = false;
+                }
+            },
+
+            BufferGeometry: class BufferGeometry {
+                constructor() { this._attrs = {}; }
+                setAttribute(name, attr) { this._attrs[name] = attr; }
+                get attributes() { return this._attrs; }
+                dispose() { }
+            },
+
+            PointsMaterial: class PointsMaterial {
+                constructor(opts) { Object.assign(this, opts); }
+            },
+
+            Vector3: class Vector3 {
+                constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+                set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }
+                copy(v) { this.x = v.x; this.y = v.y; this.z = v.z; return this; }
+                lerp(v, t) {
+                    this.x += (v.x - this.x) * t;
+                    this.y += (v.y - this.y) * t;
+                    this.z += (v.z - this.z) * t;
+                    return this;
+                }
+            },
+        };
+
+        THREE.Points = class Points {
+            constructor(geometry, material) {
+                this.geometry = geometry;
+                this.material = material;
+                this.position = new THREE.Vector3();
+                this.scale = { setScalar(s) { } };
+            }
+        };
+    </script>
+
+    <!-- CONSTANTS (full set so ParticleSystem resolves every reference) -->
+    <script>
+        const CONSTANTS = {
+            DEPTH_SCALE: 50,
+            DEFAULT_PARTICLE_COUNT: 2000,
+            MIN_PARTICLES: 500,
+            MAX_PARTICLES: 5000,
+            LERP_POSITION: 0.1,
+            LERP_SCALE: 0.08,
+            LERP_BACK: 0.01,
+            JITTER_RADIUS_NORMALIZED: 0.02,
+            HAND_DIST_MIN: 0.05,
+            HAND_DIST_MAX: 0.8,
+            SCALE_MIN: 0.3,
+            SCALE_MAX: 3.0,
+            CAMERA_FOV: 75,
+            CAMERA_Z: 100,
+        };
+    </script>
+
+    <!-- Module under test -->
+    <script src="../../js/ParticleSystem.js"></script>
+
+    <script>
+        // -------------------------------------------------------------------------
+        // Minimal test harness (consistent with other property test files)
+        // -------------------------------------------------------------------------
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        const results = [];
+
+        function log(msg, cls = 'info') {
+            const span = document.createElement('span');
+            span.className = cls;
+            span.textContent = msg + '\n';
+            logEl.appendChild(span);
+            console.log(msg);
+        }
+
+        function recordResult(name, passed, detail = '') {
+            results.push({ name, passed });
+            if (passed) {
+                log(`  ✓ PASS  ${name}`, 'pass');
+            } else {
+                log(`  ✗ FAIL  ${name}`, 'fail');
+                if (detail) log(`         ${detail}`, 'fail');
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Helpers
+        // -------------------------------------------------------------------------
+
+        /** Minimal CoordinateMapper stub — ParticleSystem only needs computeViewport(). */
+        function makeMapperStub() {
+            return {
+                computeViewport() {
+                    // FOV=75°, cameraZ=100, aspect 16:9 → width ≈ 272.2, height ≈ 153.1
+                    return { width: 272.2, height: 153.1 };
+                }
+            };
+        }
+
+        /** Minimal scene stub. */
+        function makeSceneStub() {
+            return { add() { }, remove() { } };
+        }
+
+        /**
+         * Create, initialise, and return a ParticleSystem with the given count.
+         * @param {number} count
+         */
+        function makeParticleSystem(count) {
+            const ps = new ParticleSystem(makeSceneStub(), makeMapperStub(), count);
+            ps.init();
+            return ps;
+        }
+
+        // -------------------------------------------------------------------------
+        // Pure hue formula — mirrors the implementation in ParticleSystem.updateColors()
+        // and _buildPoints().  Tested independently so properties can be verified
+        // without running a full ParticleSystem frame.
+        // -------------------------------------------------------------------------
+
+        /**
+         * Compute the hue for a given color phase using the circular interpolation
+         * formula from the design document.
+         *
+         * hue = (320 + t * 100) % 360,  t = (sin(φ) + 1) / 2
+         *
+         * @param {number} phase  φ ∈ [0, 2π]
+         * @returns {number}  hue ∈ [0, 360)
+         */
+        function computeHue(phase) {
+            const t = (Math.sin(phase) + 1) / 2; // t ∈ [0, 1]
+            return (320 + t * 100) % 360;
+        }
+
+        /**
+         * Return true when hue is in the valid pink-to-yellow spectrum:
+         * [0, 60] ∪ [320, 360).
+         * Returns false for the forbidden blue range (100°–300°) and the
+         * intermediate green/teal range (60°–100°, 300°–320°).
+         *
+         * @param {number} hue  degrees
+         */
+        function isInSpectrum(hue) {
+            return hue >= 320 || hue <= 60;
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 13a — Hue formula always stays in [0, 60] ∪ [320, 360)
+        // Feature: webcam-particle-face-ar, Property 13: Color Hue Stays in Pink-to-Yellow Spectrum
+        // Validates: Requirements 6.1, 6.2
+        // -------------------------------------------------------------------------
+
+        /**
+         * 13a — Core property: for any phase φ ∈ [0, 2π], the hue computed by
+         *       the formula must lie in [0, 60] ∪ [320, 360).
+         *
+         * Generator: fc.float({ min: 0, max: 6.2832 }) as specified in the task.
+         */
+        async function runProperty13a() {
+            log('\n── Property 13a: hue ∈ [0, 60] ∪ [320, 360) for all φ ∈ [0, 2π] ──', 'title');
+            log('   Feature: webcam-particle-face-ar, Property 13: Color Hue Stays in Pink-to-Yellow Spectrum', 'info');
+            log('   Validates: Requirements 6.1, 6.2', 'info');
+            log('   Generator: fc.float({ min: 0, max: 6.2832 }) for phase φ', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                fc.assert(
+                    fc.property(
+                        fc.float({ min: 0, max: 6.2832 }),
+                        (phase) => {
+                            const t = (Math.sin(phase) + 1) / 2;
+                            const hue = (320 + t * 100) % 360;
+
+                            if (!isInSpectrum(hue)) {
+                                throw new Error(
+                                    `phase=${phase.toFixed(6)}, t=${t.toFixed(6)}, ` +
+                                    `hue=${hue.toFixed(4)}° — outside [0,60]∪[320,360)`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 13a — hue ∈ [0, 60] ∪ [320, 360) for all φ ∈ [0, 2π]',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 13b — Hue never falls in the forbidden blue range (100°–300°)
+        // Validates: Requirements 6.1, 6.2
+        // -------------------------------------------------------------------------
+
+        /**
+         * 13b — Explicit complement: hue must never be in [100, 300].
+         *       This is the negation of the "blue range" check and makes the
+         *       forbidden zone explicit in the test output.
+         */
+        async function runProperty13b() {
+            log('\n── Property 13b: hue never in blue range [100°, 300°] ──', 'title');
+            log('   Validates: Requirements 6.1, 6.2', 'info');
+            log('   Generator: fc.float({ min: 0, max: 6.2832 }) for phase φ', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                fc.assert(
+                    fc.property(
+                        fc.float({ min: 0, max: 6.2832 }),
+                        (phase) => {
+                            const t = (Math.sin(phase) + 1) / 2;
+                            const hue = (320 + t * 100) % 360;
+
+                            if (hue > 100 && hue < 300) {
+                                throw new Error(
+                                    `phase=${phase.toFixed(6)}, t=${t.toFixed(6)}, ` +
+                                    `hue=${hue.toFixed(4)}° — falls in forbidden blue range (100°–300°)`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 13b — hue never in forbidden blue range [100°, 300°]',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 13c — Intensity Mode controls lightness (85% on, 70% off)
+        // Validates: Requirement 6.4
+        // -------------------------------------------------------------------------
+
+        /**
+         * 13c — For any phase φ, the RGB color produced by updateColors() must
+         *       correspond to HSL lightness 85% when intensityMode is on, and
+         *       70% when off.
+         *
+         * Strategy: run one frame of updateColors() on a single-particle system,
+         * then reverse-engineer the lightness from the resulting RGB values and
+         * compare against the expected value.
+         *
+         * Lightness in HSL = (max(R,G,B) + min(R,G,B)) / 2  (with R,G,B ∈ [0,1]).
+         */
+        async function runProperty13c() {
+            log('\n── Property 13c: lightness = 85% (intensity on) or 70% (intensity off) ──', 'title');
+            log('   Validates: Requirement 6.4', 'info');
+            log('   Generator: fc.float({ min: 0, max: 6.2832 }) for initial phase φ', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            const TOLERANCE = 0.005; // allow tiny floating-point rounding
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                fc.assert(
+                    fc.property(
+                        fc.float({ min: 0, max: 6.2832 }),
+                        fc.boolean(),
+                        (phase, intensityOn) => {
+                            // Build a minimal 500-particle system (minimum count)
+                            const ps = makeParticleSystem(500);
+
+                            // Override the first particle's phase so we can predict its color
+                            ps._colorPhases[0] = phase;
+
+                            // Apply intensity mode
+                            ps.setIntensityMode(intensityOn);
+
+                            // Run one frame (deltaTime = 0 so phase doesn't advance)
+                            ps.updateColors(0);
+
+                            // Read back the RGB for particle 0
+                            const colors = ps._geometry.attributes.color.array;
+                            const r = colors[0];
+                            const g = colors[1];
+                            const b = colors[2];
+
+                            // Compute HSL lightness from RGB
+                            const maxC = Math.max(r, g, b);
+                            const minC = Math.min(r, g, b);
+                            const lightness = (maxC + minC) / 2; // [0, 1]
+
+                            const expectedLightness = intensityOn ? 0.85 : 0.70;
+
+                            if (Math.abs(lightness - expectedLightness) > TOLERANCE) {
+                                throw new Error(
+                                    `phase=${phase.toFixed(4)}, intensityOn=${intensityOn}: ` +
+                                    `lightness=${(lightness * 100).toFixed(2)}% ` +
+                                    `(expected ${expectedLightness * 100}%)`
+                                );
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 13c — lightness = 85% (intensity on) or 70% (intensity off) for any phase',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Property 13d — Colors produced by updateColors() also stay in spectrum
+        // Validates: Requirements 6.1, 6.2
+        // -------------------------------------------------------------------------
+
+        /**
+         * 13d — End-to-end: after running updateColors() on a real ParticleSystem,
+         *       every particle's color must correspond to a hue in the valid spectrum.
+         *
+         * Strategy: reverse-engineer the hue from the RGB output and verify it is
+         * in [0, 60] ∪ [320, 360).
+         *
+         * Generator: fc.integer({ min: 500, max: 5000 }) for particle count.
+         */
+        async function runProperty13d() {
+            log('\n── Property 13d: all particle colors from updateColors() are in spectrum ──', 'title');
+            log('   Validates: Requirements 6.1, 6.2', 'info');
+            log('   Generator: fc.integer({ min: 500, max: 5000 }) for particle count', 'info');
+            log('   Iterations: 100\n', 'info');
+
+            let passed = true;
+            let failDetail = '';
+
+            try {
+                await fc.assert(
+                    fc.asyncProperty(
+                        fc.integer({ min: 500, max: 5000 }),
+                        async (count) => {
+                            const ps = makeParticleSystem(count);
+                            ps.updateColors(0); // deltaTime=0 keeps phases at init values
+
+                            const colors = ps._geometry.attributes.color.array;
+
+                            for (let i = 0; i < ps._count; i++) {
+                                const r = colors[i * 3];
+                                const g = colors[i * 3 + 1];
+                                const b = colors[i * 3 + 2];
+
+                                // Recover hue from RGB using the standard formula
+                                const maxC = Math.max(r, g, b);
+                                const minC = Math.min(r, g, b);
+                                const delta = maxC - minC;
+
+                                // Achromatic case (delta ≈ 0): hue is undefined — skip
+                                if (delta < 1e-6) continue;
+
+                                let hue;
+                                if (maxC === r) {
+                                    hue = 60 * (((g - b) / delta) % 6);
+                                } else if (maxC === g) {
+                                    hue = 60 * ((b - r) / delta + 2);
+                                } else {
+                                    hue = 60 * ((r - g) / delta + 4);
+                                }
+                                if (hue < 0) hue += 360;
+
+                                if (!isInSpectrum(hue)) {
+                                    throw new Error(
+                                        `Particle ${i}: recovered hue=${hue.toFixed(2)}° ` +
+                                        `(RGB=[${r.toFixed(3)},${g.toFixed(3)},${b.toFixed(3)}]) ` +
+                                        `is outside [0,60]∪[320,360) (count=${count})`
+                                    );
+                                }
+                            }
+                        }
+                    ),
+                    { numRuns: 100 }
+                );
+            } catch (err) {
+                passed = false;
+                failDetail = err.message || String(err);
+            }
+
+            recordResult(
+                'Property 13d — all particle colors from updateColors() have hue in [0,60]∪[320,360)',
+                passed,
+                failDetail
+            );
+        }
+
+        // -------------------------------------------------------------------------
+        // Edge-case tests (example-based, complement the PBT properties)
+        // -------------------------------------------------------------------------
+        async function runEdgeCases() {
+            log('\n── Edge Cases (complement to Property 13) ──', 'title');
+
+            // Case 1: phase = 0 → sin(0) = 0 → t = 0.5 → hue = 370 % 360 = 10° (red)
+            {
+                const hue = computeHue(0);
+                const expected = 10; // (320 + 0.5 * 100) % 360
+                const ok = Math.abs(hue - expected) < 1e-9 && isInSpectrum(hue);
+                recordResult(
+                    `Edge: phase=0 → hue=${hue.toFixed(4)}° (expected 10°, in spectrum)`,
+                    ok,
+                    ok ? '' : `hue=${hue} expected ${expected}`
+                );
+            }
+
+            // Case 2: phase = π/2 → sin(π/2) = 1 → t = 1 → hue = 420 % 360 = 60° (yellow)
+            {
+                const hue = computeHue(Math.PI / 2);
+                const expected = 60; // (320 + 1 * 100) % 360
+                const ok = Math.abs(hue - expected) < 1e-6 && isInSpectrum(hue);
+                recordResult(
+                    `Edge: phase=π/2 → hue=${hue.toFixed(4)}° (expected 60°, in spectrum)`,
+                    ok,
+                    ok ? '' : `hue=${hue} expected ${expected}`
+                );
+            }
+
+            // Case 3: phase = 3π/2 → sin(3π/2) = -1 → t = 0 → hue = 320° (pink)
+            {
+                const hue = computeHue(3 * Math.PI / 2);
+                const expected = 320;
+                const ok = Math.abs(hue - expected) < 1e-6 && isInSpectrum(hue);
+                recordResult(
+                    `Edge: phase=3π/2 → hue=${hue.toFixed(4)}° (expected 320°, in spectrum)`,
+                    ok,
+                    ok ? '' : `hue=${hue} expected ${expected}`
+                );
+            }
+
+            // Case 4: phase = π → sin(π) ≈ 0 → t ≈ 0.5 → hue ≈ 10° (red)
+            {
+                const hue = computeHue(Math.PI);
+                const ok = isInSpectrum(hue);
+                recordResult(
+                    `Edge: phase=π → hue=${hue.toFixed(4)}° (in spectrum)`,
+                    ok,
+                    ok ? '' : `hue=${hue} outside [0,60]∪[320,360)`
+                );
+            }
+
+            // Case 5: phase = 2π (boundary) → same as phase = 0
+            {
+                const hue = computeHue(2 * Math.PI);
+                const ok = isInSpectrum(hue);
+                recordResult(
+                    `Edge: phase=2π → hue=${hue.toFixed(4)}° (in spectrum)`,
+                    ok,
+                    ok ? '' : `hue=${hue} outside [0,60]∪[320,360)`
+                );
+            }
+
+            // Case 6: intensityMode toggle — verify lightness changes on a live system
+            {
+                const ps = makeParticleSystem(500);
+                ps._colorPhases[0] = Math.PI / 2; // t=1 → hue=60° (yellow, non-achromatic)
+
+                ps.setIntensityMode(false);
+                ps.updateColors(0);
+                const colorsOff = Float32Array.from(ps._geometry.attributes.color.array.subarray(0, 3));
+
+                ps.setIntensityMode(true);
+                ps.updateColors(0);
+                const colorsOn = Float32Array.from(ps._geometry.attributes.color.array.subarray(0, 3));
+
+                // Lightness off = 70%, on = 85% → on should be brighter (higher max channel)
+                const maxOff = Math.max(colorsOff[0], colorsOff[1], colorsOff[2]);
+                const maxOn = Math.max(colorsOn[0], colorsOn[1], colorsOn[2]);
+                const ok = maxOn > maxOff;
+                recordResult(
+                    `Edge: intensityMode on → brighter colors (maxChannel: off=${maxOff.toFixed(3)}, on=${maxOn.toFixed(3)})`,
+                    ok,
+                    ok ? '' : `Expected maxOn (${maxOn.toFixed(3)}) > maxOff (${maxOff.toFixed(3)})`
+                );
+            }
+
+            // Case 7: updateColors() produces finite RGB values (no NaN / Infinity)
+            {
+                const ps = makeParticleSystem(500);
+                for (let frame = 0; frame < 10; frame++) {
+                    ps.updateColors(1 / 60);
+                }
+                const colors = ps._geometry.attributes.color.array;
+                let allFinite = true;
+                let failMsg = '';
+                for (let i = 0; i < ps._count * 3; i++) {
+                    if (!isFinite(colors[i])) {
+                        allFinite = false;
+                        failMsg = `Channel ${i}: value=${colors[i]} is not finite`;
+                        break;
+                    }
+                }
+                recordResult(
+                    'Edge: updateColors() produces finite RGB values after 10 frames',
+                    allFinite,
+                    failMsg
+                );
+            }
+
+            // Case 8: hue range coverage — with 5000 particles the spectrum should
+            //         include both the pink end (≥ 320°) and the yellow end (≤ 60°)
+            {
+                const ps = makeParticleSystem(5000);
+                ps.updateColors(0);
+                const colors = ps._geometry.attributes.color.array;
+
+                let hasPink = false; // hue ≥ 320°
+                let hasYellow = false; // hue ≤ 60°
+
+                for (let i = 0; i < ps._count; i++) {
+                    const r = colors[i * 3];
+                    const g = colors[i * 3 + 1];
+                    const b = colors[i * 3 + 2];
+
+                    const maxC = Math.max(r, g, b);
+                    const minC = Math.min(r, g, b);
+                    const delta = maxC - minC;
+                    if (delta < 1e-6) continue;
+
+                    let hue;
+                    if (maxC === r) {
+                        hue = 60 * (((g - b) / delta) % 6);
+                    } else if (maxC === g) {
+                        hue = 60 * ((b - r) / delta + 2);
+                    } else {
+                        hue = 60 * ((r - g) / delta + 4);
+                    }
+                    if (hue < 0) hue += 360;
+
+                    if (hue >= 320) hasPink = true;
+                    if (hue <= 60) hasYellow = true;
+                    if (hasPink && hasYellow) break;
+                }
+
+                const ok = hasPink && hasYellow;
+                recordResult(
+                    `Edge: 5000-particle system covers both pink (≥320°) and yellow (≤60°) ends of spectrum`,
+                    ok,
+                    ok ? '' : `hasPink=${hasPink}, hasYellow=${hasYellow} — spectrum coverage incomplete`
+                );
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // Run all tests
+        // -------------------------------------------------------------------------
+        async function runAll() {
+            log('Starting ParticleSystem color hue spectrum property tests…\n', 'info');
+
+            await runProperty13a();
+            await runProperty13b();
+            await runProperty13c();
+            await runProperty13d();
+            await runEdgeCases();
+
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const failed = total - passed;
+
+            log('', 'info');
+            summaryEl.className = failed === 0 ? 'all-pass' : 'has-fail';
+            summaryEl.textContent = failed === 0
+                ? `✓ All ${total} tests passed`
+                : `✗ ${failed} of ${total} tests FAILED`;
+
+            console.log(`\nResults: ${passed}/${total} passed`);
+        }
+
+        document.addEventListener('DOMContentLoaded', runAll);
+    </script>
+</body>
+
+</html>
